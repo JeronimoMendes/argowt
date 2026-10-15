@@ -1,11 +1,13 @@
 package app
 
 import (
+	"context"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"argowt/internal/resources"
 	"argowt/internal/workflows"
 )
 
@@ -87,6 +89,61 @@ func TestInvalidFilterKeepsPreviousValidExpression(t *testing.T) {
 	}
 	if got := model.filteredItems(); len(got) != 1 || got[0].Name != "running" {
 		t.Fatalf("previous filter was not retained: %+v", got)
+	}
+}
+
+type fakeResourceRepository struct {
+	requests chan resources.Request
+}
+
+func (repository *fakeResourceRepository) Discover(context.Context) (map[resources.Kind]bool, error) {
+	return map[resources.Kind]bool{resources.Workflows: true, resources.WorkflowTemplates: true}, nil
+}
+
+func (repository *fakeResourceRepository) Start(_ context.Context, request resources.Request) <-chan resources.Snapshot {
+	repository.requests <- request
+	return make(chan resources.Snapshot)
+}
+
+func TestCommandPaletteSwitchesResource(t *testing.T) {
+	repository := &fakeResourceRepository{requests: make(chan resources.Request, 1)}
+	model := NewModel(ModelOptions{
+		Generation:         1,
+		RootContext:        context.Background(),
+		ResourceRepository: repository,
+		CurrentNamespace:   "argo",
+		InstanceID:         "controller-a",
+	})
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{':'}})
+	model = updated.(Model)
+	for _, character := range "wft" {
+		updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{character}})
+		model = updated.(Model)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if model.resourceDescriptor.Kind != resources.WorkflowTemplates {
+		t.Fatalf("selected resource = %s", model.resourceDescriptor.Kind)
+	}
+	request := <-repository.requests
+	if request.Descriptor.Kind != resources.WorkflowTemplates || request.CurrentNamespace != "argo" || request.InstanceID != "controller-a" {
+		t.Fatalf("unexpected request: %+v", request)
+	}
+}
+
+func TestDiscoveryHidesUnavailableEventResources(t *testing.T) {
+	model := NewModel(ModelOptions{Generation: 1})
+	updated, _ := model.Update(discoveryMessage{available: map[resources.Kind]bool{
+		resources.Workflows:         true,
+		resources.WorkflowTemplates: true,
+		resources.EventSources:      false,
+	}})
+	model = updated.(Model)
+	for _, command := range resources.Commands(model.availableResources, "") {
+		if command.Kind == resources.EventSources {
+			t.Fatal("missing EventSource CRD should be hidden")
+		}
 	}
 }
 

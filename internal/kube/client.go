@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	argoclient "github.com/argoproj/argo-workflows/v3/pkg/client/clientset/versioned"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
@@ -22,6 +23,7 @@ type Connection struct {
 	RESTConfig       *rest.Config
 	Argo             argoclient.Interface
 	Kubernetes       kubernetes.Interface
+	Dynamic          dynamic.Interface
 }
 
 type Builder interface {
@@ -74,11 +76,16 @@ func (ClientBuilder) Build(options Options) (*Connection, error) {
 	if err != nil {
 		return nil, fmt.Errorf("construct Kubernetes client: %w", err)
 	}
+	dynamicClient, err := dynamic.NewForConfig(restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("construct dynamic Kubernetes client: %w", err)
+	}
 	return &Connection{
 		Context:          contextName,
 		DefaultNamespace: namespace,
 		RESTConfig:       restConfig,
 		Argo:             argo,
 		Kubernetes:       core,
+		Dynamic:          dynamicClient,
 	}, nil
 }

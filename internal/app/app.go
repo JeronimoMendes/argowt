@@ -13,6 +13,7 @@ import (
 	"argowt/internal/config"
 	"argowt/internal/filter"
 	"argowt/internal/kube"
+	"argowt/internal/resources"
 	"argowt/internal/ui"
 	"argowt/internal/workflows"
 )
@@ -40,10 +41,12 @@ func Run(ctx context.Context, options Options) error {
 	}
 
 	generation := uint64(1)
+	namespaceLister := kube.NamespaceLister{Client: connection.Kubernetes}
 	repository := workflows.NewRepository(
 		workflows.ArgoSource{Client: connection.Argo},
-		kube.NamespaceLister{Client: connection.Kubernetes},
+		namespaceLister,
 	)
+	resourceRepository := resources.NewRepository(connection.Dynamic, connection.Kubernetes.Discovery(), namespaceLister)
 	watchContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 	updates := repository.Start(watchContext, workflows.Request{
@@ -55,12 +58,17 @@ func Run(ctx context.Context, options Options) error {
 		ActiveOnly:       true,
 	})
 	model := NewModel(ModelOptions{
-		Generation: generation,
-		Context:    connection.Context,
-		Namespace:  scopeLabel(options, connection.DefaultNamespace),
-		InstanceID: options.InstanceID,
-		Updates:    updates,
-		Cancel:     cancel,
+		Generation:         generation,
+		Context:            connection.Context,
+		Namespace:          scopeLabel(options, connection.DefaultNamespace),
+		InstanceID:         options.InstanceID,
+		Updates:            updates,
+		Cancel:             cancel,
+		RootContext:        watchContext,
+		ResourceRepository: resourceRepository,
+		AllNamespaces:      options.AllNamespaces,
+		Namespaces:         options.Namespaces,
+		CurrentNamespace:   connection.DefaultNamespace,
 	})
 
 	programOptions := []tea.ProgramOption{tea.WithContext(ctx), tea.WithAltScreen()}
@@ -84,13 +92,23 @@ func scopeLabel(options Options, defaultNamespace string) string {
 	return defaultNamespace
 }
 
+type ResourceRepository interface {
+	Discover(context.Context) (map[resources.Kind]bool, error)
+	Start(context.Context, resources.Request) <-chan resources.Snapshot
+}
+
 type ModelOptions struct {
-	Generation uint64
-	Context    string
-	Namespace  string
-	InstanceID string
-	Updates    <-chan workflows.Snapshot
-	Cancel     context.CancelFunc
+	Generation         uint64
+	Context            string
+	Namespace          string
+	InstanceID         string
+	Updates            <-chan workflows.Snapshot
+	Cancel             context.CancelFunc
+	RootContext        context.Context
+	ResourceRepository ResourceRepository
+	AllNamespaces      bool
+	Namespaces         []string
+	CurrentNamespace   string
 }
 
 type Model struct {
@@ -100,6 +118,22 @@ type Model struct {
 	instanceID string
 	updates    <-chan workflows.Snapshot
 	cancel     context.CancelFunc
+
+	rootContext        context.Context
+	resourceRepository ResourceRepository
+	allNamespaces      bool
+	namespaces         []string
+	currentNamespace   string
+	resourceGeneration uint64
+	resourceUpdates    <-chan resources.Snapshot
+	resourceCancel     context.CancelFunc
+	resourceDescriptor resources.Descriptor
+	resourceItems      []resources.Summary
+	resourceState      string
+	resourceErrors     map[string]string
+	resourceError      error
+	availableResources map[resources.Kind]bool
+	resourceNotice     string
 
 	connectionState workflows.ConnectionState
 	items           []workflows.Summary
@@ -111,6 +145,9 @@ type Model struct {
 	activeFilter    filter.Expression
 	filterError     error
 	showHelp        bool
+	palette         bool
+	command         string
+	paletteCursor   int
 	width           int
 	height          int
 }
@@ -120,26 +157,72 @@ type snapshotMessage struct {
 	open     bool
 }
 
+type resourceSnapshotMessage struct {
+	snapshot resources.Snapshot
+	updates  <-chan resources.Snapshot
+	open     bool
+}
+
+type discoveryMessage struct {
+	available map[resources.Kind]bool
+	err       error
+}
+
 func NewModel(options ModelOptions) Model {
+	workflowDescriptor, _ := resources.Lookup("workflows")
+	available := make(map[resources.Kind]bool)
+	for _, descriptor := range resources.Descriptors() {
+		available[descriptor.Kind] = true
+	}
+	rootContext := options.RootContext
+	if rootContext == nil {
+		rootContext = context.Background()
+	}
 	return Model{
-		generation:      options.Generation,
-		context:         options.Context,
-		namespace:       options.Namespace,
-		instanceID:      options.InstanceID,
-		updates:         options.Updates,
-		cancel:          options.Cancel,
-		connectionState: workflows.StateLoading,
+		generation:         options.Generation,
+		context:            options.Context,
+		namespace:          options.Namespace,
+		instanceID:         options.InstanceID,
+		updates:            options.Updates,
+		cancel:             options.Cancel,
+		rootContext:        rootContext,
+		resourceRepository: options.ResourceRepository,
+		allNamespaces:      options.AllNamespaces,
+		namespaces:         append([]string(nil), options.Namespaces...),
+		currentNamespace:   options.CurrentNamespace,
+		resourceDescriptor: workflowDescriptor,
+		availableResources: available,
+		connectionState:    workflows.StateLoading,
+		resourceState:      "loading",
 	}
 }
 
 func (model Model) Init() tea.Cmd {
-	return waitForSnapshot(model.updates)
+	commands := []tea.Cmd{waitForSnapshot(model.updates)}
+	if model.resourceRepository != nil {
+		commands = append(commands, discoverResources(model.rootContext, model.resourceRepository))
+	}
+	return tea.Batch(commands...)
 }
 
 func waitForSnapshot(updates <-chan workflows.Snapshot) tea.Cmd {
 	return func() tea.Msg {
 		snapshot, open := <-updates
 		return snapshotMessage{snapshot: snapshot, open: open}
+	}
+}
+
+func waitForResourceSnapshot(updates <-chan resources.Snapshot) tea.Cmd {
+	return func() tea.Msg {
+		snapshot, open := <-updates
+		return resourceSnapshotMessage{snapshot: snapshot, updates: updates, open: open}
+	}
+}
+
+func discoverResources(ctx context.Context, repository ResourceRepository) tea.Cmd {
+	return func() tea.Msg {
+		available, err := repository.Discover(ctx)
+		return discoveryMessage{available: available, err: err}
 	}
 }
 
@@ -157,6 +240,36 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			model.clampCursor()
 		}
 		return model, waitForSnapshot(model.updates)
+	case resourceSnapshotMessage:
+		if !message.open {
+			return model, nil
+		}
+		if message.snapshot.Generation == model.resourceGeneration && message.snapshot.Descriptor.Kind == model.resourceDescriptor.Kind {
+			if message.snapshot.Missing && message.snapshot.Descriptor.Optional {
+				model.availableResources[message.snapshot.Descriptor.Kind] = false
+				model.resourceNotice = message.snapshot.Descriptor.Title + " CRD is not installed"
+				workflowDescriptor, _ := resources.Lookup("workflows")
+				model.resourceDescriptor = workflowDescriptor
+				model.cursor = 0
+			} else {
+				model.resourceItems = message.snapshot.Items
+				model.resourceState = message.snapshot.State
+				model.resourceErrors = message.snapshot.PartialErrors
+				model.resourceError = message.snapshot.Err
+				model.clampCursor()
+			}
+		}
+		return model, waitForResourceSnapshot(message.updates)
+	case discoveryMessage:
+		if message.err != nil {
+			model.resourceNotice = message.err.Error()
+		} else {
+			for kind, available := range message.available {
+				model.availableResources[kind] = available
+			}
+			model.availableResources[resources.Workflows] = true
+		}
+		return model, nil
 	case tea.WindowSizeMsg:
 		model.width = message.Width
 		model.height = message.Height
@@ -179,22 +292,25 @@ func (model Model) updateMouse(mouse tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if mouse.Action != tea.MouseActionPress {
 			break
 		}
-		noticeLines := len(model.partialErrors)
+		noticeLines := len(model.currentErrors())
 		if model.filterError != nil {
 			noticeLines++
 		}
+		if model.resourceNotice != "" {
+			noticeLines++
+		}
 		row := mouse.Y - (4 + noticeLines)
-		items := model.filteredItems()
+		itemCount := model.itemCount()
 		visibleRows := model.height - (4 + noticeLines) - 3
 		if visibleRows < 1 || model.height == 0 {
-			visibleRows = len(items)
+			visibleRows = itemCount
 		}
 		start := 0
 		if model.cursor >= visibleRows {
 			start = model.cursor - visibleRows + 1
 		}
 		index := start + row
-		if row >= 0 && index >= 0 && index < len(items) {
+		if row >= 0 && index >= 0 && index < itemCount {
 			model.cursor = index
 		}
 	}
@@ -202,6 +318,9 @@ func (model Model) updateMouse(mouse tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (model Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if model.palette {
+		return model.updatePaletteKey(key)
+	}
 	if model.filtering {
 		switch key.String() {
 		case "esc":
@@ -241,9 +360,13 @@ func (model Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "g", "home":
 		model.cursor = 0
 	case "G", "end":
-		model.cursor = max(0, len(model.filteredItems())-1)
+		model.cursor = max(0, model.itemCount()-1)
 	case "/":
 		model.filtering = true
+	case ":":
+		model.palette = true
+		model.command = ""
+		model.paletteCursor = 0
 	case "esc":
 		model.query = ""
 		model.updateFilter()
@@ -254,13 +377,77 @@ func (model Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return model, nil
 }
 
+func (model Model) updatePaletteKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	commands := resources.Commands(model.availableResources, model.command)
+	switch key.String() {
+	case "esc":
+		model.palette = false
+		model.command = ""
+	case "enter":
+		if len(commands) == 0 {
+			return model, nil
+		}
+		index := min(model.paletteCursor, len(commands)-1)
+		model.palette = false
+		model.command = ""
+		return model.switchResource(commands[index])
+	case "up", "ctrl+k":
+		model.paletteCursor = max(0, model.paletteCursor-1)
+	case "down", "ctrl+j":
+		model.paletteCursor = min(max(0, len(commands)-1), model.paletteCursor+1)
+	case "backspace":
+		command := []rune(model.command)
+		if len(command) > 0 {
+			model.command = string(command[:len(command)-1])
+			model.paletteCursor = 0
+		}
+	default:
+		if key.Type == tea.KeyRunes {
+			model.command += string(key.Runes)
+			model.paletteCursor = 0
+		}
+	}
+	return model, nil
+}
+
+func (model Model) switchResource(descriptor resources.Descriptor) (tea.Model, tea.Cmd) {
+	if model.resourceCancel != nil {
+		model.resourceCancel()
+		model.resourceCancel = nil
+	}
+	model.resourceDescriptor = descriptor
+	model.resourceNotice = ""
+	model.resourceError = nil
+	model.resourceErrors = nil
+	model.resourceItems = nil
+	model.cursor = 0
+	if descriptor.Kind == resources.Workflows || model.resourceRepository == nil {
+		return model, nil
+	}
+
+	model.resourceGeneration++
+	resourceContext, cancel := context.WithCancel(model.rootContext)
+	model.resourceCancel = cancel
+	model.resourceState = "loading"
+	model.resourceUpdates = model.resourceRepository.Start(resourceContext, resources.Request{
+		Generation:       model.resourceGeneration,
+		Descriptor:       descriptor,
+		AllNamespaces:    model.allNamespaces,
+		Namespaces:       model.namespaces,
+		CurrentNamespace: model.currentNamespace,
+		InstanceID:       model.instanceID,
+		LabelSelector:    model.activeFilter.LabelSelector(),
+	})
+	return model, waitForResourceSnapshot(model.resourceUpdates)
+}
+
 func (model *Model) moveCursor(delta int) {
 	model.cursor += delta
 	model.clampCursor()
 }
 
 func (model *Model) clampCursor() {
-	last := len(model.filteredItems()) - 1
+	last := model.itemCount() - 1
 	if last < 0 {
 		model.cursor = 0
 		return
@@ -271,6 +458,13 @@ func (model *Model) clampCursor() {
 	if model.cursor < 0 {
 		model.cursor = 0
 	}
+}
+
+func (model Model) itemCount() int {
+	if model.resourceDescriptor.Kind == resources.Workflows {
+		return len(model.filteredItems())
+	}
+	return len(model.filteredResourceItems())
 }
 
 func (model *Model) updateFilter() {
@@ -303,79 +497,167 @@ func (model Model) filteredItems() []workflows.Summary {
 	return items
 }
 
+func (model Model) filteredResourceItems() []resources.Summary {
+	if model.activeFilter.Empty() {
+		return model.resourceItems
+	}
+	items := make([]resources.Summary, 0, len(model.resourceItems))
+	now := time.Now()
+	for _, item := range model.resourceItems {
+		if model.activeFilter.Match(filter.Document{
+			Name:              item.Name,
+			Namespace:         item.Namespace,
+			Status:            item.Status,
+			Template:          item.Template,
+			InstanceID:        item.InstanceID,
+			Labels:            item.Labels,
+			CreationTimestamp: item.CreationTimestamp,
+		}, now) {
+			items = append(items, item)
+		}
+	}
+	return items
+}
+
 func (model Model) View() string {
 	width := model.width
 	if width <= 0 {
 		width = 100
 	}
 	var output strings.Builder
-	fmt.Fprintf(&output, "argowt  context: %s  namespaces: %s  instance: %s\n",
-		ui.Sanitize(model.context), ui.Sanitize(model.namespace), displayInstance(model.instanceID))
-	fmt.Fprintf(&output, "status: %s", model.connectionState)
+	fmt.Fprintf(&output, "argowt  view: %s  context: %s  namespaces: %s  instance: %s\n",
+		ui.Sanitize(model.resourceDescriptor.Title), ui.Sanitize(model.context), ui.Sanitize(model.namespace), displayInstance(model.instanceID))
+	fmt.Fprintf(&output, "status: %s", model.currentState())
 	if model.query != "" || model.filtering {
 		fmt.Fprintf(&output, "  filter: /%s", ui.Sanitize(model.query))
 	}
 	output.WriteString("\n")
+	if model.resourceNotice != "" {
+		fmt.Fprintf(&output, "! %s\n", ui.Sanitize(model.resourceNotice))
+	}
 	if model.filterError != nil {
 		fmt.Fprintf(&output, "! filter: %s (previous valid filter remains active)\n", ui.Sanitize(model.filterError.Error()))
 	}
-
-	if model.fatalError != nil {
-		fmt.Fprintf(&output, "\n! %s\n", ui.Sanitize(model.fatalError.Error()))
-		output.WriteString("\nq quit")
-		return output.String()
+	if currentError := model.currentError(); currentError != nil {
+		fmt.Fprintf(&output, "\n! %s\n", ui.Sanitize(currentError.Error()))
 	}
-	if len(model.partialErrors) > 0 {
-		keys := make([]string, 0, len(model.partialErrors))
-		for key := range model.partialErrors {
+	if errorsByScope := model.currentErrors(); len(errorsByScope) > 0 {
+		keys := make([]string, 0, len(errorsByScope))
+		for key := range errorsByScope {
 			keys = append(keys, key)
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			fmt.Fprintf(&output, "! %s: %s\n", ui.Sanitize(key), ui.Sanitize(model.partialErrors[key]))
+			fmt.Fprintf(&output, "! %s: %s\n", ui.Sanitize(key), ui.Sanitize(errorsByScope[key]))
 		}
 	}
 
-	output.WriteString("\n  PHASE         NAMESPACE           NAME                          AGE\n")
+	output.WriteString("\n  STATUS        NAMESPACE           NAME                          AGE\n")
+	if model.resourceDescriptor.Kind == resources.Workflows {
+		model.renderWorkflows(&output, width)
+	} else {
+		model.renderResources(&output, width)
+	}
+
+	if model.palette {
+		output.WriteString("\nCommand: :" + ui.Sanitize(model.command) + "\n")
+		commands := resources.Commands(model.availableResources, model.command)
+		for index, descriptor := range commands {
+			cursor := " "
+			if index == model.paletteCursor {
+				cursor = ">"
+			}
+			fmt.Fprintf(&output, "%s :%-9s %s\n", cursor, descriptor.ShortName, descriptor.Title)
+		}
+		if len(commands) == 0 {
+			output.WriteString("  No matching resource command.\n")
+		}
+		output.WriteString("Enter switch · Esc close\n")
+	} else if model.showHelp {
+		output.WriteString("\nNavigation: j/k or arrows · g/G first/last · : resources · / filter · Esc clear · q quit · ? hide help\n")
+		output.WriteString("Filters: fuzzy text · status=Running · namespace!=argo · age>10m · label:team=payments\n")
+	} else if model.filtering {
+		output.WriteString("\nFilter: type to search · Enter apply · Esc cancel\n")
+	} else {
+		output.WriteString("\nj/k navigate · : resources · / filter · ? help · q quit\n")
+	}
+	return output.String()
+}
+
+func (model Model) renderWorkflows(output *strings.Builder, width int) {
 	items := model.filteredItems()
-	visibleRows := model.height - strings.Count(output.String(), "\n") - 3
+	start, end := model.visibleRange(len(items), strings.Count(output.String(), "\n"))
+	for index := start; index < end; index++ {
+		item := items[index]
+		renderRow(output, width, index == model.cursor, statusText(item), item.Namespace, item.Name, item.CreationTimestamp)
+	}
+	if len(items) == 0 && model.connectionState != workflows.StateLoading {
+		output.WriteString("  No active workflows match the current scope.\n")
+	}
+}
+
+func (model Model) renderResources(output *strings.Builder, width int) {
+	items := model.filteredResourceItems()
+	start, end := model.visibleRange(len(items), strings.Count(output.String(), "\n"))
+	for index := start; index < end; index++ {
+		item := items[index]
+		renderRow(output, width, index == model.cursor, genericStatusText(item.Status), item.Namespace, item.Name, item.CreationTimestamp)
+	}
+	if len(items) == 0 && model.resourceState != "loading" && model.resourceError == nil {
+		output.WriteString("  No resources match the current scope.\n")
+	}
+}
+
+func (model Model) visibleRange(length, usedLines int) (int, int) {
+	visibleRows := model.height - usedLines - 3
 	if visibleRows < 1 || model.height == 0 {
-		visibleRows = len(items)
+		visibleRows = length
 	}
 	start := 0
 	if model.cursor >= visibleRows {
 		start = model.cursor - visibleRows + 1
 	}
-	end := min(len(items), start+visibleRows)
-	for index := start; index < end; index++ {
-		item := items[index]
-		cursor := " "
-		if index == model.cursor {
-			cursor = ">"
-		}
-		line := fmt.Sprintf("%s %-13s %-19s %-29s %s",
-			cursor,
-			statusText(item),
-			ui.Truncate(ui.Sanitize(item.Namespace), 19),
-			ui.Truncate(ui.Sanitize(item.Name), 29),
-			formatAge(item.CreationTimestamp),
-		)
-		output.WriteString(ui.Truncate(line, width))
-		output.WriteByte('\n')
-	}
-	if len(items) == 0 && model.connectionState != workflows.StateLoading {
-		output.WriteString("  No active workflows match the current scope.\n")
-	}
+	return start, min(length, start+visibleRows)
+}
 
-	if model.showHelp {
-		output.WriteString("\nNavigation: j/k or arrows · g/G first/last · / filter · Esc clear · q quit · ? hide help\n")
-		output.WriteString("Filters: fuzzy text · status=Running · namespace!=argo · age>10m · label:team=payments\n")
-	} else if model.filtering {
-		output.WriteString("\nFilter: type to search · Enter apply · Esc cancel\n")
-	} else {
-		output.WriteString("\nj/k navigate · / filter · ? help · q quit\n")
+func renderRow(output *strings.Builder, width int, selected bool, status, namespace, name string, created time.Time) {
+	cursor := " "
+	if selected {
+		cursor = ">"
 	}
-	return output.String()
+	if namespace == "" {
+		namespace = "—"
+	}
+	line := fmt.Sprintf("%s %-13s %-19s %-29s %s",
+		cursor,
+		ui.Truncate(ui.Sanitize(status), 13),
+		ui.Truncate(ui.Sanitize(namespace), 19),
+		ui.Truncate(ui.Sanitize(name), 29),
+		formatAge(created),
+	)
+	output.WriteString(ui.Truncate(line, width))
+	output.WriteByte('\n')
+}
+
+func (model Model) currentState() string {
+	if model.resourceDescriptor.Kind == resources.Workflows {
+		return string(model.connectionState)
+	}
+	return model.resourceState
+}
+
+func (model Model) currentErrors() map[string]string {
+	if model.resourceDescriptor.Kind == resources.Workflows {
+		return model.partialErrors
+	}
+	return model.resourceErrors
+}
+
+func (model Model) currentError() error {
+	if model.resourceDescriptor.Kind == resources.Workflows {
+		return model.fatalError
+	}
+	return model.resourceError
 }
 
 func displayInstance(instanceID string) string {
@@ -404,6 +686,23 @@ func statusText(summary workflows.Summary) string {
 	}
 }
 
+func genericStatusText(status string) string {
+	switch strings.ToLower(status) {
+	case "running", "active", "ready", "deployed":
+		return "▶ " + status
+	case "pending", "unknown":
+		return "… " + status
+	case "suspended":
+		return "Ⅱ Suspended"
+	case "failed", "error":
+		return "! " + status
+	case "succeeded":
+		return "✓ Succeeded"
+	default:
+		return "? " + status
+	}
+}
+
 func formatAge(created time.Time) string {
 	if created.IsZero() {
 		return "unknown"
@@ -426,6 +725,9 @@ func formatAge(created time.Time) string {
 
 // MutationAllowed centralizes the safety gate used by future operation views.
 func (model Model) MutationAllowed() bool {
+	if model.resourceDescriptor.Kind != resources.Workflows {
+		return false
+	}
 	return model.connectionState == workflows.StateFresh || model.connectionState == workflows.StatePartial
 }
 
