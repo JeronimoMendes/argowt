@@ -2,7 +2,20 @@
 
 `argowt` is a terminal user interface for monitoring and operating Argo Workflows.
 
-> **Status:** early implementation. The repository foundation and CLI contract are in place; the interactive workflow browser is the next milestone.
+> **Status:** early implementation. The active-workflow browser is usable; resource details and workflow operations remain under development.
+
+## Current capabilities
+
+- Native kubeconfig and client-go authentication, including exec plugins.
+- Current-context, explicit-context, namespace, all-namespace, and controller-instance scopes.
+- Live active-workflow list/watch with deterministic ordering.
+- Adaptive all-namespace access with namespace fallback under restricted RBAC.
+- Visible fresh, partial-authorization, stale, reconnecting, and fatal states.
+- Keyboard and mouse navigation with fuzzy filtering.
+- Bounded reconnect backoff and resource-version recovery.
+- Cluster-free unit tests using narrow fake clients.
+
+The browser is read-only. Workflow mutations have not been implemented.
 
 ## Specifications
 
@@ -14,12 +27,13 @@
 
 ## Development
 
-Go 1.23 or newer is required.
+Go 1.24.2 or newer is required.
 
 ```sh
 make fmt            # format Go sources
 make test           # cluster-free unit tests
 make build          # build bin/argowt
+make install        # install to ~/.local/bin by default
 make release-check  # format, test, vet, and cross-compile release targets
 ```
 
@@ -27,7 +41,18 @@ Ordinary tests do not load kubeconfig or contact Kubernetes. Disposable-cluster 
 
 The bootstrap module path is intentionally `argowt` because a canonical public repository URL has not been selected. It must be replaced before the first public release.
 
-## Current CLI
+## Running
+
+The default uses the current kubeconfig context and its namespace:
+
+```sh
+argowt
+argowt --namespace argo
+argowt --all-namespaces
+argowt --context development --instanceid controller-a
+```
+
+Inside the browser, use `j`/`k` or arrow keys to navigate, `/` to filter, `?` for help, and `q` to quit.
 
 ```text
 argowt [flags]
@@ -42,4 +67,4 @@ argowt [flags]
 --version
 ```
 
-`argowt --help` and `argowt --version` are deliberately handled before any application or Kubernetes client setup.
+`argowt --help` and `argowt --version` are deliberately handled before kubeconfig or Kubernetes client setup.

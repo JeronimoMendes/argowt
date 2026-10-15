@@ -3,19 +3,24 @@ GOFMT ?= gofmt
 VERSION ?= dev
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || printf unknown)
 BUILD_DATE ?= unknown
+BINDIR ?= $(HOME)/.local/bin
 
 LDFLAGS := -s -w \
 	-X argowt/internal/version.Version=$(VERSION) \
 	-X argowt/internal/version.Commit=$(COMMIT) \
 	-X argowt/internal/version.Date=$(BUILD_DATE)
 
-.PHONY: all build fmt fmt-check test vet cross-build release-check clean
+.PHONY: all build install fmt fmt-check test vet cross-build release-check clean
 
 all: build
 
 build:
 	@mkdir -p bin
 	$(GO) build -trimpath -ldflags '$(LDFLAGS)' -o bin/argowt ./cmd/argowt
+
+install: build
+	@mkdir -p $(BINDIR)
+	install -m 0755 bin/argowt $(BINDIR)/argowt
 
 fmt:
 	$(GO) fmt ./...
