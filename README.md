@@ -61,12 +61,15 @@ argowt
 argowt --namespace argo
 argowt --all-namespaces
 argowt --context development --instanceid controller-a
+argowt 'https://argo.example.com/workflows/argo/hello?nodeId=hello-123'
 ```
+
+An Argo web UI URL opens its workflow (and node), template, cron workflow, event source, or sensor. The URL namespace becomes the scope unless `--namespace` or `--all-namespaces` is set. The kube context is not read from the URL; use `--context`.
 
 Inside the browser, use `j`/`k` or arrow keys to navigate, `:` to switch resource types, `/` to filter, `Enter` to open a workflow or resource, `n`/`N` to toggle/configure notifications, `s` to submit a selected template, `?` for help, and `q` to quit. Workflow execution views use `t`, `d`, and `l` for tree, DAG, and table modes; press `Enter` or `o` on a node for live pod logs.
 
 ```text
-argowt [flags]
+argowt [flags] [URL]
 
 --kubeconfig PATH
 --context NAME

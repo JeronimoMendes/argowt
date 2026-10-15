@@ -9,6 +9,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"argowt/internal/argourl"
+	"argowt/internal/resources"
 	"argowt/internal/ui"
 	"argowt/internal/workflows"
 )
@@ -22,6 +24,12 @@ func (model Model) openWorkflowExecution() (tea.Model, tea.Cmd) {
 		return model, nil
 	}
 	workflow := items[model.cursor]
+	return model.startExecution(workflow.Namespace, workflow.Name, workflow.UID)
+}
+
+// startExecution opens the live execution view. An empty uid skips the
+// identity check.
+func (model Model) startExecution(namespace, name, uid string) (tea.Model, tea.Cmd) {
 	if model.executionCancel != nil {
 		model.executionCancel()
 	}
@@ -39,11 +47,42 @@ func (model Model) openWorkflowExecution() (tea.Model, tea.Cmd) {
 	model.executionUpdates = model.executionRepository.StartExecution(
 		executionContext,
 		model.executionGeneration,
-		workflow.Namespace,
-		workflow.Name,
-		workflow.UID,
+		namespace,
+		name,
+		uid,
 	)
 	return model, waitForExecution(model.executionUpdates)
+}
+
+// openTarget shows a startup URL target: a workflow execution, a resource
+// detail, or a resource list.
+func (model Model) openTarget(target argourl.Target) (tea.Model, tea.Cmd) {
+	descriptor, found := resources.Lookup(string(target.Kind))
+	if !found {
+		return model, nil
+	}
+	switched, command := model.switchResource(descriptor)
+	model = switched.(Model)
+	if target.Name == "" {
+		return model, command
+	}
+
+	if target.Kind != resources.Workflows {
+		if model.resourceRepository == nil {
+			return model, command
+		}
+		opened, detailCommand := model.openDetail(target.Namespace, target.Name, "")
+		return opened, tea.Batch(command, detailCommand)
+	}
+	if model.executionRepository == nil {
+		return model, command
+	}
+	opened, executionCommand := model.startExecution(target.Namespace, target.Name, target.UID)
+	model = opened.(Model)
+
+	// The first execution update moves the cursor to this node.
+	model.executionSelectedID = target.NodeID
+	return model, tea.Batch(command, executionCommand)
 }
 
 func (model Model) updateExecutionKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {

@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"argowt/internal/argourl"
 	"argowt/internal/clipboard"
 	"argowt/internal/config"
 	"argowt/internal/filter"
@@ -35,6 +36,7 @@ type Options struct {
 	AllNamespaces bool
 	InstanceID    string
 	Paths         config.Paths
+	Open          argourl.Target
 }
 
 // Run constructs native clients only after CLI parsing and starts the TUI.
@@ -89,6 +91,7 @@ func Run(ctx context.Context, options Options) error {
 		LogService:          logService,
 		StartupWarning:      stateErr,
 		Clipboard:           clipboard.Copy,
+		Open:                options.Open,
 	})
 
 	_, err = tea.NewProgram(model, tea.WithContext(ctx), tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
@@ -155,6 +158,7 @@ type ModelOptions struct {
 	AllNamespaces       bool
 	Namespaces          []string
 	CurrentNamespace    string
+	Open                argourl.Target
 }
 
 type Model struct {
@@ -205,6 +209,7 @@ type Model struct {
 	executionCursor     int
 	executionSelectedID string
 	executionScroll     int
+	open                argourl.Target
 
 	notificationManager  NotificationManager
 	notificationEvents   <-chan notify.Event
@@ -346,6 +351,9 @@ type logReconnectMessage struct {
 	generation uint64
 }
 
+// openMessage opens the startup URL target once the program runs.
+type openMessage struct{}
+
 type nodePreviewDwellMessage struct {
 	generation uint64
 	nodeID     string
@@ -410,6 +418,7 @@ func NewModel(options ModelOptions) Model {
 		connectionState:      workflows.StateLoading,
 		resourceState:        "loading",
 		executionMode:        "tree",
+		open:                 options.Open,
 	}
 }
 
@@ -423,6 +432,9 @@ func (model Model) Init() tea.Cmd {
 	}
 	if model.notificationWarnings != nil {
 		commands = append(commands, waitForNotificationWarning(model.notificationWarnings))
+	}
+	if model.open.Kind != "" {
+		commands = append(commands, func() tea.Msg { return openMessage{} })
 	}
 	return tea.Batch(commands...)
 }
@@ -595,6 +607,8 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return model, tea.Batch(waitForExecution(message.updates), previewCommand)
+	case openMessage:
+		return model.openTarget(model.open)
 	case notificationMessage:
 		model.notifications = append(model.notifications, message.event)
 		if len(model.notifications) > 5 {
@@ -913,6 +927,12 @@ func (model Model) openSelectedDetail() (tea.Model, tea.Cmd) {
 		item := items[model.cursor]
 		namespace, name, uid = item.Namespace, item.Name, item.UID
 	}
+	return model.openDetail(namespace, name, uid)
+}
+
+// openDetail loads one resource of the current kind. An empty uid skips the
+// identity check.
+func (model Model) openDetail(namespace, name, uid string) (tea.Model, tea.Cmd) {
 	model.detailVisible = true
 	model.detailLoading = true
 	model.detailError = nil

@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"argowt/internal/argourl"
 	applogs "argowt/internal/logs"
 	"argowt/internal/notify"
 	"argowt/internal/resources"
@@ -326,6 +327,37 @@ func TestEnterOpensLiveWorkflowExecutionAndPreservesSelection(t *testing.T) {
 	}
 	if executionRepository.namespace != "argo" || executionRepository.name != "example" || executionRepository.uid != "uid-1" {
 		t.Fatalf("unexpected execution identity: %+v", executionRepository)
+	}
+}
+
+func TestOpenTargetSelectsURLNode(t *testing.T) {
+	executionRepository := &fakeExecutionRepository{updates: make(chan workflows.ExecutionUpdate, 1)}
+	model := NewModel(ModelOptions{
+		Generation:          1,
+		RootContext:         context.Background(),
+		ExecutionRepository: executionRepository,
+		Open:                argourl.Target{Kind: resources.Workflows, Namespace: "argo", Name: "example", NodeID: "child"},
+	})
+
+	updated, command := model.Update(openMessage{})
+	model = updated.(Model)
+	if !model.executionVisible || executionRepository.name != "example" || executionRepository.uid != "" {
+		t.Fatalf("execution did not open: %+v", executionRepository)
+	}
+	executionRepository.updates <- workflows.ExecutionUpdate{
+		Generation: model.executionGeneration,
+		Execution: workflows.Execution{
+			Roots: []string{"root"},
+			Nodes: map[string]workflows.Node{
+				"root":  {ID: "root", Children: []string{"child"}},
+				"child": {ID: "child", Parents: []string{"root"}},
+			},
+		},
+	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if model.executionSelectedID != "child" || model.executionCursor != 1 {
+		t.Fatalf("selected node = %q cursor = %d", model.executionSelectedID, model.executionCursor)
 	}
 }
 

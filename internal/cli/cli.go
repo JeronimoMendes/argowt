@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"argowt/internal/app"
+	"argowt/internal/argourl"
 	"argowt/internal/config"
 	"argowt/internal/version"
 )
@@ -18,7 +19,10 @@ import (
 const helpText = `argowt monitors and operates Argo Workflows from the terminal.
 
 Usage:
-  argowt [flags]
+  argowt [flags] [URL]
+
+URL is an Argo web UI link to open, e.g.
+https://argo.example.com/workflows/argo/hello?nodeId=hello-123
 
 Flags:
   --kubeconfig PATH       path to a kubeconfig file
@@ -63,6 +67,15 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, run Runne
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
+
+	// Flags may follow the URL: argowt URL --context dev.
+	var link string
+	if flags.NArg() > 0 {
+		link = flags.Arg(0)
+		if err := flags.Parse(flags.Args()[1:]); err != nil {
+			return err
+		}
+	}
 	if showHelp {
 		_, err := io.WriteString(stdout, helpText)
 		return err
@@ -84,6 +97,17 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, run Runne
 	}
 	opts.Paths = paths
 	opts.Namespaces = namespaces.values
+
+	// Scope the session to the URL namespace unless flags set a scope.
+	if link != "" {
+		opts.Open, err = argourl.Parse(link)
+		if err != nil {
+			return err
+		}
+		if opts.Open.Namespace != "" && len(opts.Namespaces) == 0 && !opts.AllNamespaces {
+			opts.Namespaces = []string{opts.Open.Namespace}
+		}
+	}
 	if instanceID.set {
 		opts.InstanceID = instanceID.value
 	} else {

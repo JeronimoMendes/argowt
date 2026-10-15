@@ -101,3 +101,26 @@ func TestInstanceIDFallsBackToEnvironment(t *testing.T) {
 		t.Fatalf("instance ID = %q, want controller-a", got.InstanceID)
 	}
 }
+
+func TestURLScopesNamespaceAndAllowsTrailingFlags(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+
+	var got app.Options
+	err := Run(context.Background(), []string{
+		"https://argo.example.com/workflows/team/hello?nodeId=hello-1",
+		"--context", "development",
+	}, &bytes.Buffer{}, &bytes.Buffer{}, func(_ context.Context, options app.Options) error {
+		got = options
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got.Context != "development" || got.Open.Name != "hello" || got.Open.NodeID != "hello-1" {
+		t.Fatalf("unexpected options: %+v", got)
+	}
+	if strings.Join(got.Namespaces, ",") != "team" {
+		t.Fatalf("namespaces = %v, want [team]", got.Namespaces)
+	}
+}
