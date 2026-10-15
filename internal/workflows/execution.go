@@ -14,13 +14,14 @@ import (
 )
 
 type Execution struct {
-	Namespace string
-	Name      string
-	UID       string
-	Phase     string
-	Message   string
-	Nodes     map[string]Node
-	Roots     []string
+	Namespace       string
+	Name            string
+	UID             string
+	ResourceVersion string
+	Phase           string
+	Message         string
+	Nodes           map[string]Node
+	Roots           []string
 }
 
 type Node struct {
@@ -182,12 +183,13 @@ func NormalizeExecution(workflow *wfv1.Workflow) Execution {
 		return Execution{Nodes: map[string]Node{}}
 	}
 	execution := Execution{
-		Namespace: workflow.Namespace,
-		Name:      workflow.Name,
-		UID:       string(workflow.UID),
-		Phase:     string(workflow.Status.Phase),
-		Message:   workflow.Status.Message,
-		Nodes:     make(map[string]Node, len(workflow.Status.Nodes)),
+		Namespace:       workflow.Namespace,
+		Name:            workflow.Name,
+		UID:             string(workflow.UID),
+		ResourceVersion: workflow.ResourceVersion,
+		Phase:           string(workflow.Status.Phase),
+		Message:         workflow.Status.Message,
+		Nodes:           make(map[string]Node, len(workflow.Status.Nodes)),
 	}
 	if len(workflow.Status.Nodes) == 0 && workflow.Status.OffloadNodeStatusVersion != "" {
 		execution.Message = strings.TrimSpace(execution.Message + " Node status is offloaded and unavailable through the Kubernetes object.")

@@ -91,6 +91,10 @@ func (model Model) updateExecutionKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "G", "end":
 		model.executionCursor = max(0, len(model.executionNodeIDs())-1)
 		model.syncExecutionSelection()
+	case "n":
+		model.toggleSelectedNotification()
+	case "N":
+		model.openNotificationConfig()
 	}
 	return model, nil
 }
@@ -163,9 +167,13 @@ func (model Model) executionView(width int) string {
 		name = model.execution.Namespace + "/" + model.execution.Name
 		phase = model.execution.Phase
 	}
-	fmt.Fprintf(&output, "argowt  workflow: %s  mode: %s  phase: %s\n",
-		ui.Sanitize(name), model.executionMode, ui.Sanitize(phase))
-	output.WriteString("t tree · d DAG · l table · Tab next view · j/k navigate · Esc back · q quit\n")
+	watchIndicator := ""
+	if model.execution != nil && model.notificationManager != nil && model.notificationManager.IsWatched(model.execution.UID) {
+		watchIndicator = "  🔔 notifications on"
+	}
+	fmt.Fprintf(&output, "argowt  workflow: %s  mode: %s  phase: %s%s\n",
+		ui.Sanitize(name), model.executionMode, ui.Sanitize(phase), watchIndicator)
+	output.WriteString("t tree · d DAG · l table · Tab next view · j/k navigate · n toggle notify · N configure · Esc back · q quit\n")
 	if model.executionStale {
 		output.WriteString("! execution data is stale; reconnecting\n")
 	}

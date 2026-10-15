@@ -2,7 +2,7 @@
 
 `argowt` is a terminal user interface for monitoring and operating Argo Workflows.
 
-> **Status:** early implementation. The active-workflow browser is usable; resource details and workflow operations remain under development.
+> **Status:** early implementation. Browsing, workflow visualization, notifications, and template submission are usable; logs and lifecycle operations remain under development.
 
 ## Current capabilities
 
@@ -16,10 +16,12 @@
 - Dynamic Argo Events discovery: missing optional CRDs are hidden and forbidden resource scopes remain isolated.
 - Read-only metadata, labels, annotations, owners, conditions, and YAML detail views with UID identity checks.
 - Live workflow execution visualization with tree, DAG, and table modes plus node timing, messages, inputs, outputs, artifacts, retries, pod placement, and stable selection across views.
+- Persistent UID-bound workflow notification watches, startup reconciliation, configurable transitions, in-TUI alerts, and graceful desktop-notification fallback.
+- Workflow submission from WorkflowTemplates and ClusterWorkflowTemplates with parameter forms and explicit context/namespace/source confirmation.
 - Bounded reconnect backoff and resource-version recovery.
 - Cluster-free unit tests using narrow fake clients.
 
-The browser is read-only. Workflow mutations have not been implemented.
+Template submission is implemented. Retry, resubmit, suspend, resume, stop, terminate, delete, and local-YAML submission are not implemented yet.
 
 ## Specifications
 
@@ -56,7 +58,7 @@ argowt --all-namespaces
 argowt --context development --instanceid controller-a
 ```
 
-Inside the browser, use `j`/`k` or arrow keys to navigate, `:` to switch resource types, `/` to filter, `Enter` to open a workflow or resource, `?` for help, and `q` to quit. Workflow execution views use `t`, `d`, and `l` for tree, DAG, and table modes.
+Inside the browser, use `j`/`k` or arrow keys to navigate, `:` to switch resource types, `/` to filter, `Enter` to open a workflow or resource, `n`/`N` to toggle/configure notifications, `s` to submit a selected template, `?` for help, and `q` to quit. Workflow execution views use `t`, `d`, and `l` for tree, DAG, and table modes.
 
 ```text
 argowt [flags]

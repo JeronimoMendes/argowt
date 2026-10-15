@@ -13,6 +13,7 @@ import (
 	"argowt/internal/config"
 	"argowt/internal/filter"
 	"argowt/internal/kube"
+	"argowt/internal/notify"
 	"argowt/internal/resources"
 	"argowt/internal/ui"
 	"argowt/internal/workflows"
@@ -42,13 +43,19 @@ func Run(ctx context.Context, options Options) error {
 
 	generation := uint64(1)
 	namespaceLister := kube.NamespaceLister{Client: connection.Kubernetes}
-	repository := workflows.NewRepository(
-		workflows.ArgoSource{Client: connection.Argo},
-		namespaceLister,
-	)
+	workflowSource := workflows.ArgoSource{Client: connection.Argo}
+	repository := workflows.NewRepository(workflowSource, namespaceLister)
 	resourceRepository := resources.NewRepository(connection.Dynamic, connection.Kubernetes.Discovery(), namespaceLister)
+	submissionService := workflows.NewSubmissionService(connection.Argo)
 	watchContext, cancel := context.WithCancel(ctx)
 	defer cancel()
+	state, stateErr := config.LoadState(options.Paths.StateFile)
+	if stateErr != nil {
+		state = config.NewState()
+	}
+	notificationManager := notify.NewManager(workflowSource, connection.Context, options.Paths.StateFile, state, notify.NoopDesktop{})
+	notificationManager.Start(watchContext)
+	defer notificationManager.Close()
 	updates := repository.Start(watchContext, workflows.Request{
 		Generation:       generation,
 		AllNamespaces:    options.AllNamespaces,
@@ -70,6 +77,9 @@ func Run(ctx context.Context, options Options) error {
 		AllNamespaces:       options.AllNamespaces,
 		Namespaces:          options.Namespaces,
 		CurrentNamespace:    connection.DefaultNamespace,
+		NotificationManager: notificationManager,
+		SubmissionService:   submissionService,
+		StartupWarning:      stateErr,
 	})
 
 	programOptions := []tea.ProgramOption{tea.WithContext(ctx), tea.WithAltScreen()}
@@ -97,6 +107,20 @@ type WorkflowExecutionRepository interface {
 	StartExecution(context.Context, uint64, string, string, string) <-chan workflows.ExecutionUpdate
 }
 
+type NotificationManager interface {
+	Events() <-chan notify.Event
+	Warnings() <-chan error
+	IsWatched(string) bool
+	Toggle(workflows.Summary) (bool, error)
+	Settings(string) ([]string, bool, bool)
+	SetTransitions(string, []string, bool) error
+}
+
+type TemplateSubmissionService interface {
+	Prepare(context.Context, workflows.SubmissionSource, string) (workflows.SubmissionForm, error)
+	Submit(context.Context, workflows.SubmissionRequest) (workflows.SubmissionResult, error)
+}
+
 type ResourceRepository interface {
 	Discover(context.Context) (map[resources.Kind]bool, error)
 	Start(context.Context, resources.Request) <-chan resources.Snapshot
@@ -113,6 +137,9 @@ type ModelOptions struct {
 	RootContext         context.Context
 	ResourceRepository  ResourceRepository
 	ExecutionRepository WorkflowExecutionRepository
+	NotificationManager NotificationManager
+	SubmissionService   TemplateSubmissionService
+	StartupWarning      error
 	AllNamespaces       bool
 	Namespaces          []string
 	CurrentNamespace    string
@@ -162,6 +189,26 @@ type Model struct {
 	executionSelectedID string
 	executionScroll     int
 
+	notificationManager  NotificationManager
+	notificationEvents   <-chan notify.Event
+	notificationWarnings <-chan error
+	notifications        []notify.Event
+	notificationWarning  error
+	notificationConfig   bool
+	notificationUID      string
+	notificationName     string
+	notificationChoices  map[string]bool
+	notificationDesktop  bool
+
+	submissionService TemplateSubmissionService
+	submissionVisible bool
+	submissionStage   string
+	submissionForm    workflows.SubmissionForm
+	submissionValues  map[string]string
+	submissionFocus   int
+	submissionError   error
+	submissionResult  *workflows.SubmissionResult
+
 	connectionState workflows.ConnectionState
 	items           []workflows.Summary
 	partialErrors   map[string]string
@@ -209,6 +256,26 @@ type executionMessage struct {
 	open    bool
 }
 
+type notificationMessage struct {
+	event  notify.Event
+	events <-chan notify.Event
+}
+
+type notificationWarningMessage struct {
+	err      error
+	warnings <-chan error
+}
+
+type submissionFormMessage struct {
+	form workflows.SubmissionForm
+	err  error
+}
+
+type submissionResultMessage struct {
+	result workflows.SubmissionResult
+	err    error
+}
+
 func NewModel(options ModelOptions) Model {
 	workflowDescriptor, _ := resources.Lookup("workflows")
 	available := make(map[resources.Kind]bool)
@@ -219,24 +286,35 @@ func NewModel(options ModelOptions) Model {
 	if rootContext == nil {
 		rootContext = context.Background()
 	}
+	var notificationEvents <-chan notify.Event
+	var notificationWarnings <-chan error
+	if options.NotificationManager != nil {
+		notificationEvents = options.NotificationManager.Events()
+		notificationWarnings = options.NotificationManager.Warnings()
+	}
 	return Model{
-		generation:          options.Generation,
-		context:             options.Context,
-		namespace:           options.Namespace,
-		instanceID:          options.InstanceID,
-		updates:             options.Updates,
-		cancel:              options.Cancel,
-		rootContext:         rootContext,
-		resourceRepository:  options.ResourceRepository,
-		executionRepository: options.ExecutionRepository,
-		allNamespaces:       options.AllNamespaces,
-		namespaces:          append([]string(nil), options.Namespaces...),
-		currentNamespace:    options.CurrentNamespace,
-		resourceDescriptor:  workflowDescriptor,
-		availableResources:  available,
-		connectionState:     workflows.StateLoading,
-		resourceState:       "loading",
-		executionMode:       "tree",
+		generation:           options.Generation,
+		context:              options.Context,
+		namespace:            options.Namespace,
+		instanceID:           options.InstanceID,
+		updates:              options.Updates,
+		cancel:               options.Cancel,
+		rootContext:          rootContext,
+		resourceRepository:   options.ResourceRepository,
+		executionRepository:  options.ExecutionRepository,
+		notificationManager:  options.NotificationManager,
+		notificationEvents:   notificationEvents,
+		notificationWarnings: notificationWarnings,
+		notificationWarning:  options.StartupWarning,
+		submissionService:    options.SubmissionService,
+		allNamespaces:        options.AllNamespaces,
+		namespaces:           append([]string(nil), options.Namespaces...),
+		currentNamespace:     options.CurrentNamespace,
+		resourceDescriptor:   workflowDescriptor,
+		availableResources:   available,
+		connectionState:      workflows.StateLoading,
+		resourceState:        "loading",
+		executionMode:        "tree",
 	}
 }
 
@@ -244,6 +322,12 @@ func (model Model) Init() tea.Cmd {
 	commands := []tea.Cmd{waitForSnapshot(model.updates)}
 	if model.resourceRepository != nil {
 		commands = append(commands, discoverResources(model.rootContext, model.resourceRepository))
+	}
+	if model.notificationEvents != nil {
+		commands = append(commands, waitForNotification(model.notificationEvents))
+	}
+	if model.notificationWarnings != nil {
+		commands = append(commands, waitForNotificationWarning(model.notificationWarnings))
 	}
 	return tea.Batch(commands...)
 }
@@ -266,6 +350,32 @@ func waitForExecution(updates <-chan workflows.ExecutionUpdate) tea.Cmd {
 	return func() tea.Msg {
 		update, open := <-updates
 		return executionMessage{update: update, updates: updates, open: open}
+	}
+}
+
+func waitForNotification(events <-chan notify.Event) tea.Cmd {
+	return func() tea.Msg {
+		return notificationMessage{event: <-events, events: events}
+	}
+}
+
+func waitForNotificationWarning(warnings <-chan error) tea.Cmd {
+	return func() tea.Msg {
+		return notificationWarningMessage{err: <-warnings, warnings: warnings}
+	}
+}
+
+func prepareSubmission(ctx context.Context, service TemplateSubmissionService, source workflows.SubmissionSource, destinationNamespace string) tea.Cmd {
+	return func() tea.Msg {
+		form, err := service.Prepare(ctx, source, destinationNamespace)
+		return submissionFormMessage{form: form, err: err}
+	}
+}
+
+func submitTemplate(ctx context.Context, service TemplateSubmissionService, request workflows.SubmissionRequest) tea.Cmd {
+	return func() tea.Msg {
+		result, err := service.Submit(ctx, request)
+		return submissionResultMessage{result: result, err: err}
 	}
 }
 
@@ -350,6 +460,38 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return model, waitForExecution(message.updates)
+	case notificationMessage:
+		model.notifications = append(model.notifications, message.event)
+		if len(model.notifications) > 5 {
+			model.notifications = model.notifications[len(model.notifications)-5:]
+		}
+		return model, waitForNotification(message.events)
+	case notificationWarningMessage:
+		model.notificationWarning = message.err
+		return model, waitForNotificationWarning(message.warnings)
+	case submissionFormMessage:
+		model.submissionError = message.err
+		if message.err == nil {
+			model.submissionForm = message.form
+			model.submissionValues = make(map[string]string, len(message.form.Parameters))
+			for _, parameter := range message.form.Parameters {
+				model.submissionValues[parameter.Name] = parameter.Default
+			}
+			model.submissionStage = "edit"
+		} else {
+			model.submissionStage = "error"
+		}
+		return model, nil
+	case submissionResultMessage:
+		model.submissionError = message.err
+		if message.err == nil {
+			result := message.result
+			model.submissionResult = &result
+			model.submissionStage = "complete"
+		} else {
+			model.submissionStage = "confirm"
+		}
+		return model, nil
 	case tea.WindowSizeMsg:
 		model.width = message.Width
 		model.height = message.Height
@@ -398,6 +540,12 @@ func (model Model) updateMouse(mouse tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (model Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if model.submissionVisible {
+		return model.updateSubmissionKey(key)
+	}
+	if model.notificationConfig {
+		return model.updateNotificationConfigKey(key)
+	}
 	if model.executionVisible {
 		return model.updateExecutionKey(key)
 	}
@@ -461,6 +609,12 @@ func (model Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		model.showHelp = !model.showHelp
 	case "enter":
 		return model.openSelectedDetail()
+	case "n":
+		model.toggleSelectedNotification()
+	case "N":
+		model.openNotificationConfig()
+	case "s":
+		return model.openTemplateSubmission()
 	}
 	return model, nil
 }
@@ -526,6 +680,230 @@ func (model Model) currentResourceGeneration() uint64 {
 		return model.generation
 	}
 	return model.resourceGeneration
+}
+
+func (model *Model) selectedWorkflowSummary() (workflows.Summary, bool) {
+	if model.notificationManager == nil || model.resourceDescriptor.Kind != resources.Workflows {
+		return workflows.Summary{}, false
+	}
+	if model.executionVisible && model.execution != nil {
+		return workflows.Summary{
+			Namespace:       model.execution.Namespace,
+			Name:            model.execution.Name,
+			UID:             model.execution.UID,
+			ResourceVersion: model.execution.ResourceVersion,
+			Phase:           model.execution.Phase,
+		}, true
+	}
+	items := model.filteredItems()
+	if model.cursor >= len(items) {
+		return workflows.Summary{}, false
+	}
+	return items[model.cursor], true
+}
+
+func (model *Model) toggleSelectedNotification() {
+	summary, found := model.selectedWorkflowSummary()
+	if !found {
+		return
+	}
+	watched, err := model.notificationManager.Toggle(summary)
+	if err != nil {
+		model.notificationWarning = err
+		return
+	}
+	if watched {
+		model.resourceNotice = "Notifications enabled for " + summary.Namespace + "/" + summary.Name
+	} else {
+		model.resourceNotice = "Notifications disabled for " + summary.Namespace + "/" + summary.Name
+	}
+}
+
+func (model *Model) openNotificationConfig() {
+	summary, found := model.selectedWorkflowSummary()
+	if !found {
+		return
+	}
+	if !model.notificationManager.IsWatched(summary.UID) {
+		watched, err := model.notificationManager.Toggle(summary)
+		if err != nil || !watched {
+			model.notificationWarning = err
+			return
+		}
+	}
+	transitions, desktop, found := model.notificationManager.Settings(summary.UID)
+	if !found {
+		return
+	}
+	model.notificationChoices = make(map[string]bool)
+	for _, transition := range transitions {
+		model.notificationChoices[transition] = true
+	}
+	model.notificationUID = summary.UID
+	model.notificationName = summary.Namespace + "/" + summary.Name
+	model.notificationDesktop = desktop
+	model.notificationConfig = true
+}
+
+func (model Model) updateNotificationConfigKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	transitions := []string{"Running", "Suspended", "Succeeded", "Failed", "Error", "Terminated"}
+	switch key.String() {
+	case "esc":
+		model.notificationConfig = false
+	case "enter":
+		selected := make([]string, 0, len(transitions))
+		for _, transition := range transitions {
+			if model.notificationChoices[transition] {
+				selected = append(selected, transition)
+			}
+		}
+		if err := model.notificationManager.SetTransitions(model.notificationUID, selected, model.notificationDesktop); err != nil {
+			model.notificationWarning = err
+		} else {
+			model.notificationConfig = false
+			model.resourceNotice = "Notification preferences saved for " + model.notificationName
+		}
+	case "d":
+		model.notificationDesktop = !model.notificationDesktop
+	default:
+		if len(key.String()) == 1 && key.String()[0] >= '1' && key.String()[0] <= '6' {
+			index := int(key.String()[0] - '1')
+			transition := transitions[index]
+			model.notificationChoices[transition] = !model.notificationChoices[transition]
+		}
+	}
+	return model, nil
+}
+
+func (model Model) openTemplateSubmission() (tea.Model, tea.Cmd) {
+	if model.submissionService == nil || (model.resourceDescriptor.Kind != resources.WorkflowTemplates && model.resourceDescriptor.Kind != resources.ClusterWorkflowTemplates) {
+		return model, nil
+	}
+	items := model.filteredResourceItems()
+	if model.cursor >= len(items) {
+		return model, nil
+	}
+	item := items[model.cursor]
+	source := workflows.SubmissionSource{
+		Namespace: item.Namespace,
+		Name:      item.Name,
+		Cluster:   model.resourceDescriptor.Kind == resources.ClusterWorkflowTemplates,
+	}
+	destination := item.Namespace
+	if destination == "" {
+		destination = model.currentNamespace
+	}
+	model.submissionVisible = true
+	model.submissionStage = "loading"
+	model.submissionForm = workflows.SubmissionForm{Source: source, DestinationNamespace: destination}
+	model.submissionError = nil
+	model.submissionResult = nil
+	model.submissionFocus = 0
+	return model, prepareSubmission(model.rootContext, model.submissionService, source, destination)
+}
+
+func (model Model) updateSubmissionKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch model.submissionStage {
+	case "loading":
+		if key.String() == "esc" {
+			model.clearSubmission()
+		}
+		return model, nil
+	case "error", "complete":
+		if key.String() == "esc" || key.String() == "enter" {
+			model.clearSubmission()
+		}
+		return model, nil
+	case "confirm":
+		switch key.String() {
+		case "esc", "n":
+			model.submissionStage = "edit"
+			model.submissionError = nil
+		case "y", "enter":
+			model.submissionStage = "submitting"
+			return model, submitTemplate(model.rootContext, model.submissionService, workflows.SubmissionRequest{
+				Source:               model.submissionForm.Source,
+				DestinationNamespace: model.submissionForm.DestinationNamespace,
+				Parameters:           copyStringMap(model.submissionValues),
+			})
+		}
+		return model, nil
+	case "submitting":
+		return model, nil
+	}
+
+	fieldCount := len(model.submissionForm.Parameters) + 1
+	switch key.String() {
+	case "esc":
+		model.clearSubmission()
+	case "up", "shift+tab":
+		model.submissionFocus = max(0, model.submissionFocus-1)
+	case "down", "tab":
+		model.submissionFocus = min(fieldCount-1, model.submissionFocus+1)
+	case "enter", "ctrl+s":
+		if model.submissionFocus < fieldCount-1 && key.String() == "enter" {
+			model.submissionFocus++
+			break
+		}
+		if err := model.validateSubmission(); err != nil {
+			model.submissionError = err
+		} else {
+			model.submissionError = nil
+			model.submissionStage = "confirm"
+		}
+	case "backspace":
+		model.editSubmissionValue(func(value []rune) []rune {
+			if len(value) == 0 {
+				return value
+			}
+			return value[:len(value)-1]
+		})
+	default:
+		if key.Type == tea.KeyRunes {
+			addition := append([]rune(nil), key.Runes...)
+			model.editSubmissionValue(func(value []rune) []rune { return append(value, addition...) })
+		}
+	}
+	return model, nil
+}
+
+func (model *Model) editSubmissionValue(edit func([]rune) []rune) {
+	if model.submissionFocus == 0 {
+		model.submissionForm.DestinationNamespace = string(edit([]rune(model.submissionForm.DestinationNamespace)))
+		return
+	}
+	parameter := model.submissionForm.Parameters[model.submissionFocus-1]
+	model.submissionValues[parameter.Name] = string(edit([]rune(model.submissionValues[parameter.Name])))
+}
+
+func (model Model) validateSubmission() error {
+	if strings.TrimSpace(model.submissionForm.DestinationNamespace) == "" {
+		return fmt.Errorf("destination namespace is required")
+	}
+	for _, parameter := range model.submissionForm.Parameters {
+		if parameter.Required && strings.TrimSpace(model.submissionValues[parameter.Name]) == "" {
+			return fmt.Errorf("parameter %s is required", parameter.Name)
+		}
+	}
+	return nil
+}
+
+func (model *Model) clearSubmission() {
+	model.submissionVisible = false
+	model.submissionStage = ""
+	model.submissionForm = workflows.SubmissionForm{}
+	model.submissionValues = nil
+	model.submissionError = nil
+	model.submissionResult = nil
+	model.submissionFocus = 0
+}
+
+func copyStringMap(source map[string]string) map[string]string {
+	result := make(map[string]string, len(source))
+	for key, value := range source {
+		result[key] = value
+	}
+	return result
 }
 
 func (model Model) updatePaletteKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -678,6 +1056,12 @@ func (model Model) View() string {
 	if width <= 0 {
 		width = 100
 	}
+	if model.submissionVisible {
+		return model.submissionView(width)
+	}
+	if model.notificationConfig {
+		return model.notificationConfigView(width)
+	}
 	if model.executionVisible {
 		return model.executionView(width)
 	}
@@ -692,6 +1076,13 @@ func (model Model) View() string {
 		fmt.Fprintf(&output, "  filter: /%s", ui.Sanitize(model.query))
 	}
 	output.WriteString("\n")
+	if model.notificationWarning != nil {
+		fmt.Fprintf(&output, "! notification: %s\n", ui.Sanitize(model.notificationWarning.Error()))
+	}
+	if len(model.notifications) > 0 {
+		latest := model.notifications[len(model.notifications)-1]
+		fmt.Fprintf(&output, "🔔 %s/%s: %s → %s\n", ui.Sanitize(latest.Namespace), ui.Sanitize(latest.Name), ui.Sanitize(latest.From), ui.Sanitize(latest.To))
+	}
 	if model.resourceNotice != "" {
 		fmt.Fprintf(&output, "! %s\n", ui.Sanitize(model.resourceNotice))
 	}
@@ -734,13 +1125,105 @@ func (model Model) View() string {
 		}
 		output.WriteString("Enter switch · Esc close\n")
 	} else if model.showHelp {
-		output.WriteString("\nNavigation: j/k or arrows · g/G first/last · : resources · / filter · Esc clear · q quit · ? hide help\n")
+		output.WriteString("\nNavigation: j/k or arrows · g/G first/last · Enter open · s submit template · n toggle notify · N configure · : resources · / filter · Esc clear · q quit · ? hide help\n")
 		output.WriteString("Filters: fuzzy text · status=Running · namespace!=argo · age>10m · label:team=payments\n")
 	} else if model.filtering {
 		output.WriteString("\nFilter: type to search · Enter apply · Esc cancel\n")
 	} else {
-		output.WriteString("\nj/k navigate · : resources · / filter · ? help · q quit\n")
+		output.WriteString("\nj/k navigate · Enter open · s submit · n notify · N configure · : resources · / filter · ? help · q quit\n")
 	}
+	return output.String()
+}
+
+func (model Model) submissionView(width int) string {
+	var output strings.Builder
+	fmt.Fprintf(&output, "argowt  submit from %s/%s\n\n", sourceKind(model.submissionForm.Source), ui.Sanitize(model.submissionForm.Source.Name))
+	switch model.submissionStage {
+	case "loading":
+		output.WriteString("Loading template parameters…\n\nEsc cancel\n")
+	case "error":
+		fmt.Fprintf(&output, "! %s\n\nEnter/Esc close\n", ui.Sanitize(model.submissionError.Error()))
+	case "submitting":
+		output.WriteString("Submitting workflow…\n")
+	case "complete":
+		fmt.Fprintf(&output, "✓ Submitted workflow %s/%s\n\nEnter/Esc close\n",
+			ui.Sanitize(model.submissionResult.Namespace), ui.Sanitize(model.submissionResult.Name))
+	case "confirm":
+		fmt.Fprintf(&output, "Confirm submission\n  context: %s\n  namespace: %s\n  source: %s/%s\n",
+			ui.Sanitize(model.context), ui.Sanitize(model.submissionForm.DestinationNamespace), sourceKind(model.submissionForm.Source), ui.Sanitize(model.submissionForm.Source.Name))
+		for _, parameter := range model.submissionForm.Parameters {
+			fmt.Fprintf(&output, "  %s=%s\n", ui.Sanitize(parameter.Name), ui.Sanitize(model.submissionValues[parameter.Name]))
+		}
+		if model.submissionError != nil {
+			fmt.Fprintf(&output, "\n! %s\n", ui.Sanitize(model.submissionError.Error()))
+		}
+		output.WriteString("\ny/Enter submit · n/Esc edit\n")
+	default:
+		fields := []struct {
+			name        string
+			value       string
+			description string
+			required    bool
+		}{{name: "destination namespace", value: model.submissionForm.DestinationNamespace, required: true}}
+		for _, parameter := range model.submissionForm.Parameters {
+			fields = append(fields, struct {
+				name        string
+				value       string
+				description string
+				required    bool
+			}{parameter.Name, model.submissionValues[parameter.Name], parameter.Description, parameter.Required})
+		}
+		for index, field := range fields {
+			cursor := " "
+			if index == model.submissionFocus {
+				cursor = ">"
+			}
+			required := ""
+			if field.required {
+				required = " *"
+			}
+			fmt.Fprintf(&output, "%s %s%s: %s\n", cursor, ui.Sanitize(field.name), required, ui.Sanitize(field.value))
+			if field.description != "" {
+				fmt.Fprintf(&output, "    %s\n", ui.Sanitize(field.description))
+			}
+		}
+		if model.submissionError != nil {
+			fmt.Fprintf(&output, "\n! %s\n", ui.Sanitize(model.submissionError.Error()))
+		}
+		output.WriteString("\nTab/↑/↓ fields · Enter next/confirm · Ctrl+S confirm · Esc cancel\n")
+	}
+	lines := strings.Split(output.String(), "\n")
+	for index := range lines {
+		lines[index] = ui.Truncate(lines[index], width)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func sourceKind(source workflows.SubmissionSource) string {
+	if source.Cluster {
+		return "ClusterWorkflowTemplate"
+	}
+	return "WorkflowTemplate"
+}
+
+func (model Model) notificationConfigView(width int) string {
+	transitions := []string{"Running", "Suspended", "Succeeded", "Failed", "Error", "Terminated"}
+	var output strings.Builder
+	fmt.Fprintf(&output, "argowt  notification preferences: %s\n\n", ui.Sanitize(model.notificationName))
+	output.WriteString("Choose transitions:\n")
+	for index, transition := range transitions {
+		mark := " "
+		if model.notificationChoices[transition] {
+			mark = "x"
+		}
+		fmt.Fprintf(&output, "  %d [%s] %s\n", index+1, mark, transition)
+	}
+	desktop := "off"
+	if model.notificationDesktop {
+		desktop = "on (uses graceful no-op fallback when unavailable)"
+	}
+	fmt.Fprintf(&output, "\n  d desktop notifications: %s\n", desktop)
+	output.WriteString("\n1-6 toggle · d desktop · Enter save · Esc cancel\n")
 	return output.String()
 }
 
@@ -857,7 +1340,11 @@ func (model Model) renderWorkflows(output *strings.Builder, width int) {
 	start, end := model.visibleRange(len(items), strings.Count(output.String(), "\n"))
 	for index := start; index < end; index++ {
 		item := items[index]
-		renderRow(output, width, index == model.cursor, statusText(item), item.Namespace, item.Name, item.CreationTimestamp)
+		name := item.Name
+		if model.notificationManager != nil && model.notificationManager.IsWatched(item.UID) {
+			name = "🔔 " + name
+		}
+		renderRow(output, width, index == model.cursor, statusText(item), item.Namespace, name, item.CreationTimestamp)
 	}
 	if len(items) == 0 && model.connectionState != workflows.StateLoading {
 		output.WriteString("  No active workflows match the current scope.\n")

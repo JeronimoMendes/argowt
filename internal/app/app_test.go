@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"argowt/internal/notify"
 	"argowt/internal/resources"
 	"argowt/internal/workflows"
 )
@@ -96,6 +97,61 @@ type fakeResourceRepository struct {
 	requests chan resources.Request
 }
 
+type fakeNotificationManager struct {
+	watched     map[string]bool
+	transitions map[string][]string
+	desktop     map[string]bool
+	events      chan notify.Event
+	warnings    chan error
+}
+
+func newFakeNotificationManager() *fakeNotificationManager {
+	return &fakeNotificationManager{
+		watched: make(map[string]bool), transitions: make(map[string][]string), desktop: make(map[string]bool),
+		events: make(chan notify.Event, 1), warnings: make(chan error, 1),
+	}
+}
+
+func (manager *fakeNotificationManager) Events() <-chan notify.Event { return manager.events }
+func (manager *fakeNotificationManager) Warnings() <-chan error      { return manager.warnings }
+func (manager *fakeNotificationManager) IsWatched(uid string) bool   { return manager.watched[uid] }
+func (manager *fakeNotificationManager) Toggle(summary workflows.Summary) (bool, error) {
+	manager.watched[summary.UID] = !manager.watched[summary.UID]
+	if manager.watched[summary.UID] {
+		manager.transitions[summary.UID] = append([]string(nil), notify.DefaultTransitions...)
+	}
+	return manager.watched[summary.UID], nil
+}
+func (manager *fakeNotificationManager) Settings(uid string) ([]string, bool, bool) {
+	if !manager.watched[uid] {
+		return nil, false, false
+	}
+	return append([]string(nil), manager.transitions[uid]...), manager.desktop[uid], true
+}
+func (manager *fakeNotificationManager) SetTransitions(uid string, transitions []string, desktop bool) error {
+	manager.transitions[uid] = append([]string(nil), transitions...)
+	manager.desktop[uid] = desktop
+	return nil
+}
+
+type fakeSubmissionService struct {
+	form    workflows.SubmissionForm
+	request workflows.SubmissionRequest
+	result  workflows.SubmissionResult
+}
+
+func (service *fakeSubmissionService) Prepare(_ context.Context, source workflows.SubmissionSource, destination string) (workflows.SubmissionForm, error) {
+	form := service.form
+	form.Source = source
+	form.DestinationNamespace = destination
+	return form, nil
+}
+
+func (service *fakeSubmissionService) Submit(_ context.Context, request workflows.SubmissionRequest) (workflows.SubmissionResult, error) {
+	service.request = request
+	return service.result, nil
+}
+
 type fakeExecutionRepository struct {
 	updates   chan workflows.ExecutionUpdate
 	namespace string
@@ -161,6 +217,41 @@ func TestCommandPaletteSwitchesResource(t *testing.T) {
 	}
 }
 
+func TestWorkflowNotificationToggleAndConfiguration(t *testing.T) {
+	notifications := newFakeNotificationManager()
+	model := NewModel(ModelOptions{Generation: 1, NotificationManager: notifications})
+	model.connectionState = workflows.StateFresh
+	model.items = []workflows.Summary{{Namespace: "argo", Name: "example", UID: "uid-1", Phase: "Running"}}
+
+	updated, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	model = updated.(Model)
+	if !notifications.IsWatched("uid-1") {
+		t.Fatal("n should enable a UID-bound notification watch")
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'N'}})
+	model = updated.(Model)
+	if !model.notificationConfig {
+		t.Fatal("N should open notification preferences")
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if model.notificationConfig || !notifications.desktop["uid-1"] {
+		t.Fatalf("notification preferences were not saved: %+v", model)
+	}
+	foundRunning := false
+	for _, transition := range notifications.transitions["uid-1"] {
+		foundRunning = foundRunning || transition == "Running"
+	}
+	if !foundRunning {
+		t.Fatalf("transitions = %v", notifications.transitions["uid-1"])
+	}
+}
+
 func TestEnterOpensLiveWorkflowExecutionAndPreservesSelection(t *testing.T) {
 	executionRepository := &fakeExecutionRepository{updates: make(chan workflows.ExecutionUpdate, 2)}
 	model := NewModel(ModelOptions{
@@ -207,6 +298,46 @@ func TestEnterOpensLiveWorkflowExecutionAndPreservesSelection(t *testing.T) {
 	}
 	if executionRepository.namespace != "argo" || executionRepository.name != "example" || executionRepository.uid != "uid-1" {
 		t.Fatalf("unexpected execution identity: %+v", executionRepository)
+	}
+}
+
+func TestSubmitWorkflowFromTemplateFormAndConfirmation(t *testing.T) {
+	service := &fakeSubmissionService{
+		form:   workflows.SubmissionForm{Parameters: []workflows.SubmissionParameter{{Name: "message", Required: true, Description: "message to process"}}},
+		result: workflows.SubmissionResult{Namespace: "argo", Name: "payments-abc"},
+	}
+	model := NewModel(ModelOptions{Generation: 1, RootContext: context.Background(), SubmissionService: service, CurrentNamespace: "argo"})
+	descriptor, _ := resources.Lookup("wft")
+	model.resourceDescriptor = descriptor
+	model.resourceItems = []resources.Summary{{Kind: resources.WorkflowTemplates, Namespace: "argo", Name: "payments"}}
+
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	model = updated.(Model)
+	if !model.submissionVisible || command == nil {
+		t.Fatal("submission form did not start loading")
+	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(Model)
+	for _, character := range "hello" {
+		updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{character}})
+		model = updated.(Model)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
+	model = updated.(Model)
+	if model.submissionStage != "confirm" || !strings.Contains(model.View(), "context:") {
+		t.Fatalf("confirmation view = %q", model.View())
+	}
+	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model = updated.(Model)
+	if command == nil {
+		t.Fatal("confirmation did not submit")
+	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if model.submissionStage != "complete" || service.request.Parameters["message"] != "hello" {
+		t.Fatalf("submission = stage %s request %+v", model.submissionStage, service.request)
 	}
 }
 
