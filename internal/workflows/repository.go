@@ -284,6 +284,12 @@ func consumeWatch(ctx context.Context, stream watch.Interface, request Request, 
 				continue
 			}
 			state.resourceVersion = workflow.ResourceVersion
+
+			// A bookmark only carries a resourceVersion, not a workflow.
+			if event.Type == watch.Bookmark {
+				continue
+			}
+
 			key := workflow.Namespace + "/" + workflow.Name
 			if event.Type == watch.Deleted || (request.ActiveOnly && !Normalize(workflow).Active()) {
 				delete(state.workflows, key)

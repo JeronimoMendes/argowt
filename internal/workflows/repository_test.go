@@ -160,9 +160,12 @@ func TestWatchUpdatesActiveSnapshot(t *testing.T) {
 		t.Fatalf("workflows after add = %+v", updated.Workflows)
 	}
 
+	// A bookmark carries an empty workflow; it must not become a row.
+	watcher.Action(watch.Bookmark, &wfv1.Workflow{ObjectMeta: metav1.ObjectMeta{ResourceVersion: "3"}})
+
 	completed := added.DeepCopy()
 	completed.Status.Phase = wfv1.WorkflowSucceeded
-	completed.ResourceVersion = "3"
+	completed.ResourceVersion = "4"
 	watcher.Modify(completed)
 	updated = <-updates
 	if len(updated.Workflows) != 1 || updated.Workflows[0].Name != "first" {

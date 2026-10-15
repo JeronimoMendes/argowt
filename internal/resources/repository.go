@@ -302,6 +302,12 @@ func consume(ctx context.Context, stream watch.Interface, descriptor Descriptor,
 				continue
 			}
 			state.resourceVersion = object.GetResourceVersion()
+
+			// A bookmark only carries a resourceVersion, not a resource.
+			if event.Type == watch.Bookmark {
+				continue
+			}
+
 			key := object.GetNamespace() + "/" + object.GetName()
 			if event.Type == watch.Deleted {
 				delete(state.items, key)
