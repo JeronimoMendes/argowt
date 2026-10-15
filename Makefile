@@ -10,7 +10,7 @@ LDFLAGS := -s -w \
 	-X argowt/internal/version.Commit=$(COMMIT) \
 	-X argowt/internal/version.Date=$(BUILD_DATE)
 
-.PHONY: all build install fmt fmt-check test vet cross-build release-check clean
+.PHONY: all build install fmt fmt-check test vet cross-build release-check clean dev-up dev-down dev-run
 
 all: build
 
@@ -45,3 +45,12 @@ release-check: fmt-check test vet cross-build
 
 clean:
 	rm -rf bin
+
+dev-up:
+	dev/cluster.sh up
+
+dev-down:
+	dev/cluster.sh down
+
+dev-run: build
+	dev/cluster.sh run

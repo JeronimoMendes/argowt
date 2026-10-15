@@ -43,6 +43,9 @@ make test           # cluster-free unit tests
 make build          # build bin/argowt
 make install        # install to ~/.local/bin by default
 make release-check  # format, test, vet, and cross-compile release targets
+make dev-up         # local kind cluster with Argo (isolated under .dev/)
+make dev-run        # run argowt against it
+make dev-down       # delete it
 ```
 
 Ordinary tests do not load kubeconfig or contact Kubernetes. Disposable-cluster integration commands will be added with the isolated integration harness described in the test specification.
