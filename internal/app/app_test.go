@@ -513,3 +513,27 @@ func TestViewSanitizesAPIValues(t *testing.T) {
 		t.Fatalf("view does not include textual status: %q", view)
 	}
 }
+
+func TestMouseDragCopiesSelectedText(t *testing.T) {
+	copied := make(chan string, 1)
+	model := NewModel(ModelOptions{Generation: 1, Clipboard: func(text string) error {
+		copied <- text
+		return nil
+	}})
+	model.width, model.height = 100, 30
+
+	updated, _ := model.Update(tea.MouseMsg{X: 0, Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	updated, _ = updated.Update(tea.MouseMsg{X: 5, Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	if view := updated.View(); !strings.Contains(view, "\x1b[7margowt\x1b[27m") {
+		t.Fatalf("selection not highlighted: %q", view)
+	}
+
+	updated, command := updated.Update(tea.MouseMsg{X: 5, Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+	if command == nil {
+		t.Fatal("release should copy the selection")
+	}
+	command()
+	if text := <-copied; text != "argowt" {
+		t.Fatalf("copied = %q", text)
+	}
+}

@@ -63,7 +63,6 @@ func TestOptions(t *testing.T) {
 		"--all-namespaces",
 		"--instanceid", "from-flag",
 		"--config", "/tmp/argowt.yaml",
-		"--no-mouse",
 	}, &bytes.Buffer{}, &bytes.Buffer{}, func(_ context.Context, options app.Options) error {
 		got = options
 		return nil
@@ -77,7 +76,7 @@ func TestOptions(t *testing.T) {
 	if strings.Join(got.Namespaces, ",") != "one,two" {
 		t.Fatalf("namespaces = %v, want [one two]", got.Namespaces)
 	}
-	if !got.AllNamespaces || got.InstanceID != "from-flag" || got.MouseEnabled {
+	if !got.AllNamespaces || got.InstanceID != "from-flag" {
 		t.Fatalf("unexpected scope/input options: %+v", got)
 	}
 	if got.Paths.ConfigFile != "/tmp/argowt.yaml" {
@@ -100,8 +99,5 @@ func TestInstanceIDFallsBackToEnvironment(t *testing.T) {
 	}
 	if got.InstanceID != "controller-a" {
 		t.Fatalf("instance ID = %q, want controller-a", got.InstanceID)
-	}
-	if !got.MouseEnabled {
-		t.Fatal("mouse should be enabled by default")
 	}
 }

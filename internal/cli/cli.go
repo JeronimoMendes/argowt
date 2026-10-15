@@ -27,7 +27,6 @@ Flags:
   --all-namespaces        start with all accessible namespaces
   --instanceid ID         Argo controller instance ID (defaults to ARGO_INSTANCEID)
   --config PATH           path to the argowt configuration file
-  --no-mouse              disable mouse input
   --version               print version information and exit
   -h, --help              show this help
 `
@@ -48,7 +47,6 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, run Runne
 	var namespaces namespaceValue
 	var instanceID optionalString
 	var configPath string
-	var noMouse bool
 	var showVersion bool
 	var showHelp bool
 
@@ -58,7 +56,6 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, run Runne
 	flags.BoolVar(&opts.AllNamespaces, "all-namespaces", false, "start with all accessible namespaces")
 	flags.Var(&instanceID, "instanceid", "Argo controller instance ID")
 	flags.StringVar(&configPath, "config", "", "path to the argowt configuration file")
-	flags.BoolVar(&noMouse, "no-mouse", false, "disable mouse input")
 	flags.BoolVar(&showVersion, "version", false, "print version information and exit")
 	flags.BoolVar(&showHelp, "help", false, "show help")
 	flags.BoolVar(&showHelp, "h", false, "show help")
@@ -87,7 +84,6 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, run Runne
 	}
 	opts.Paths = paths
 	opts.Namespaces = namespaces.values
-	opts.MouseEnabled = !noMouse
 	if instanceID.set {
 		opts.InstanceID = instanceID.value
 	} else {

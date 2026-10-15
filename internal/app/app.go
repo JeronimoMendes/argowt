@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"argowt/internal/clipboard"
 	"argowt/internal/config"
 	"argowt/internal/filter"
 	"argowt/internal/kube"
@@ -34,7 +35,6 @@ type Options struct {
 	AllNamespaces bool
 	InstanceID    string
 	Paths         config.Paths
-	MouseEnabled  bool
 }
 
 // Run constructs native clients only after CLI parsing and starts the TUI.
@@ -88,13 +88,10 @@ func Run(ctx context.Context, options Options) error {
 		SubmissionService:   submissionService,
 		LogService:          logService,
 		StartupWarning:      stateErr,
+		Clipboard:           clipboard.Copy,
 	})
 
-	programOptions := []tea.ProgramOption{tea.WithContext(ctx), tea.WithAltScreen()}
-	if options.MouseEnabled {
-		programOptions = append(programOptions, tea.WithMouseCellMotion())
-	}
-	_, err = tea.NewProgram(model, programOptions...).Run()
+	_, err = tea.NewProgram(model, tea.WithContext(ctx), tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
 	if err != nil {
 		return fmt.Errorf("run terminal UI: %w", err)
 	}
@@ -153,6 +150,7 @@ type ModelOptions struct {
 	NotificationManager NotificationManager
 	SubmissionService   TemplateSubmissionService
 	LogService          LogService
+	Clipboard           func(string) error
 	StartupWarning      error
 	AllNamespaces       bool
 	Namespaces          []string
@@ -183,13 +181,18 @@ type Model struct {
 	resourceError       error
 	availableResources  map[resources.Kind]bool
 	resourceNotice      string
-	detail              *resources.Detail
-	detailError         error
-	detailLoading       bool
-	detailVisible       bool
-	detailYAML          bool
-	detailScroll        int
-	detailUID           string
+
+	clipboard        func(string) error
+	selection        ui.Selection
+	selecting        bool
+	selectionVisible bool
+	detail           *resources.Detail
+	detailError      error
+	detailLoading    bool
+	detailVisible    bool
+	detailYAML       bool
+	detailScroll     int
+	detailUID        string
 
 	executionGeneration uint64
 	executionUpdates    <-chan workflows.ExecutionUpdate
@@ -395,6 +398,7 @@ func NewModel(options ModelOptions) Model {
 		notificationWarning:  options.StartupWarning,
 		submissionService:    options.SubmissionService,
 		logService:           options.LogService,
+		clipboard:            options.Clipboard,
 		logFollow:            true,
 		logWrap:              true,
 		logAutoScroll:        true,
@@ -720,13 +724,19 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return model, waitForNodePreviewEvent(message.generation, message.nodeID, message.updates)
 	case tea.WindowSizeMsg:
+		model.selectionVisible = false
 		model.width = message.Width
 		model.height = message.Height
 		return model, nil
 	case tea.KeyMsg:
+		model.selectionVisible = false
 		return model.updateKey(message)
 	case tea.MouseMsg:
-		return model.updateMouse(message)
+		selected, command, consumed := model.updateSelection(message)
+		if consumed {
+			return selected, command
+		}
+		return selected.updateMouse(message)
 	}
 	return model, nil
 }
@@ -1289,7 +1299,7 @@ func (model Model) filteredResourceItems() []resources.Summary {
 	return items
 }
 
-func (model Model) View() string {
+func (model Model) screen() string {
 	width := model.width
 	if width <= 0 {
 		width = 100

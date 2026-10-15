@@ -12,7 +12,7 @@
 - Adaptive all-namespace access with namespace fallback under restricted RBAC.
 - Visible fresh, partial-authorization, stale, reconnecting, and fatal states.
 - Adaptive light/dark terminal colors, highlighted selections, and symbol-plus-text statuses that remain understandable without color.
-- Keyboard and mouse navigation with fuzzy and structured filtering.
+- Keyboard and mouse navigation with fuzzy and structured filtering. Drag to select and copy text.
 - Resource command palette for Workflows, WorkflowTemplates, ClusterWorkflowTemplates, CronWorkflows, EventSources, Sensors, and EventBuses.
 - Dynamic Argo Events discovery: missing optional CRDs are hidden and forbidden resource scopes remain isolated.
 - Read-only metadata, labels, annotations, owners, conditions, and YAML detail views with UID identity checks.
@@ -71,7 +71,6 @@ argowt [flags]
 --all-namespaces
 --instanceid ID
 --config PATH
---no-mouse
 --version
 ```
 

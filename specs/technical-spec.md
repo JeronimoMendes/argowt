@@ -45,7 +45,6 @@ argowt [flags]
 --all-namespaces
 --instanceid ID
 --config PATH
---no-mouse
 --version
 ```
 
@@ -72,7 +71,6 @@ Expected configuration domains:
 
 - Namespace allowlists per context.
 - Keybindings.
-- Mouse enablement.
 - Desktop-notification enablement and transition defaults.
 - Display preferences.
 - Optional context labels/policies.
