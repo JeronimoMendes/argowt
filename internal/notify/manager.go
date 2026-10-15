@@ -11,6 +11,7 @@ import (
 	"time"
 
 	wfv1 "github.com/argoproj/argo-workflows/v3/pkg/apis/workflow/v1alpha1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/watch"
@@ -222,9 +223,10 @@ func (manager *Manager) runRecord(ctx context.Context, record config.WorkflowWat
 		manager.updateRecord(record)
 		attempt = 0
 
+		// Watch from the current state, not from the Get resourceVersion: an unchanged
+		// workflow keeps an old version, which the API server rejects with 410 Expired.
 		stream, err := client.Watch(ctx, metav1.ListOptions{
-			FieldSelector:   fields.OneTermEqualSelector("metadata.name", record.Name).String(),
-			ResourceVersion: workflow.ResourceVersion,
+			FieldSelector: fields.OneTermEqualSelector("metadata.name", record.Name).String(),
 		})
 		if err == nil {
 			err = manager.consume(ctx, stream, &record)
@@ -251,7 +253,7 @@ func (manager *Manager) consume(ctx context.Context, stream watch.Interface, rec
 				return fmt.Errorf("watch closed")
 			}
 			if watched.Type == watch.Error {
-				return fmt.Errorf("watch failed")
+				return fmt.Errorf("watch failed: %w", apierrors.FromObject(watched.Object))
 			}
 			workflow, ok := watched.Object.(*wfv1.Workflow)
 			if !ok {

@@ -24,8 +24,9 @@ type fakeSource struct {
 func (source fakeSource) Workflows(string) workflows.WorkflowClient { return source.client }
 
 type fakeClient struct {
-	workflow *wfv1.Workflow
-	watcher  *watch.RaceFreeFakeWatcher
+	workflow     *wfv1.Workflow
+	watcher      *watch.RaceFreeFakeWatcher
+	watchOptions chan metav1.ListOptions
 }
 
 func (client *fakeClient) Get(context.Context, string, metav1.GetOptions) (*wfv1.Workflow, error) {
@@ -39,7 +40,10 @@ func (client *fakeClient) List(context.Context, metav1.ListOptions) (*wfv1.Workf
 	return &wfv1.WorkflowList{}, nil
 }
 
-func (client *fakeClient) Watch(context.Context, metav1.ListOptions) (watch.Interface, error) {
+func (client *fakeClient) Watch(_ context.Context, options metav1.ListOptions) (watch.Interface, error) {
+	if client.watchOptions != nil {
+		client.watchOptions <- options
+	}
 	return client.watcher, nil
 }
 
@@ -107,7 +111,8 @@ func TestStartupReconcilesMissedTransition(t *testing.T) {
 		Context: "development", Namespace: "argo", Name: "example", UID: "uid-1",
 		LastPhase: "Running", ResourceVersion: "2", Transitions: []string{"Succeeded"},
 	}}
-	manager := NewManager(fakeSource{client: &fakeClient{workflow: workflow, watcher: watch.NewRaceFreeFake()}}, "development", "", state, NoopDesktop{})
+	client := &fakeClient{workflow: workflow, watcher: watch.NewRaceFreeFake(), watchOptions: make(chan metav1.ListOptions, 1)}
+	manager := NewManager(fakeSource{client: client}, "development", "", state, NoopDesktop{})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	manager.Start(ctx)
@@ -116,6 +121,11 @@ func TestStartupReconcilesMissedTransition(t *testing.T) {
 	event := receiveEvent(t, manager.Events())
 	if !event.CatchUp || event.To != "Succeeded" {
 		t.Fatalf("catch-up event = %+v", event)
+	}
+
+	// An unchanged workflow keeps an old resourceVersion; watching from it fails with 410 Expired.
+	if options := <-client.watchOptions; options.ResourceVersion != "" {
+		t.Fatalf("watch resourceVersion = %q, want current state", options.ResourceVersion)
 	}
 }
 
