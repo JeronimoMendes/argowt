@@ -219,3 +219,16 @@ func receiveEvent(t *testing.T, events <-chan Event) Event {
 		return Event{}
 	}
 }
+
+func TestDesktopCommandPassesTextAsArguments(t *testing.T) {
+	command, err := desktopCommand(context.Background(), "darwin", `a" & do shell script "x`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if last := command.Args[len(command.Args)-1]; last != `a" & do shell script "x` {
+		t.Fatalf("body argument = %q", last)
+	}
+	if _, err := desktopCommand(context.Background(), "plan9", "body"); err == nil {
+		t.Fatal("unsupported platform should fail gracefully")
+	}
+}

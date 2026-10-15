@@ -60,7 +60,7 @@ func Run(ctx context.Context, options Options) error {
 	if stateErr != nil {
 		state = config.NewState()
 	}
-	notificationManager := notify.NewManager(workflowSource, connection.Context, options.Paths.StateFile, state, notify.NoopDesktop{})
+	notificationManager := notify.NewManager(workflowSource, connection.Context, options.Paths.StateFile, state, notify.NewDesktop())
 	notificationManager.Start(watchContext)
 	defer notificationManager.Close()
 	updates := repository.Start(watchContext, workflows.Request{
