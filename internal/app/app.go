@@ -58,17 +58,18 @@ func Run(ctx context.Context, options Options) error {
 		ActiveOnly:       true,
 	})
 	model := NewModel(ModelOptions{
-		Generation:         generation,
-		Context:            connection.Context,
-		Namespace:          scopeLabel(options, connection.DefaultNamespace),
-		InstanceID:         options.InstanceID,
-		Updates:            updates,
-		Cancel:             cancel,
-		RootContext:        watchContext,
-		ResourceRepository: resourceRepository,
-		AllNamespaces:      options.AllNamespaces,
-		Namespaces:         options.Namespaces,
-		CurrentNamespace:   connection.DefaultNamespace,
+		Generation:          generation,
+		Context:             connection.Context,
+		Namespace:           scopeLabel(options, connection.DefaultNamespace),
+		InstanceID:          options.InstanceID,
+		Updates:             updates,
+		Cancel:              cancel,
+		RootContext:         watchContext,
+		ResourceRepository:  resourceRepository,
+		ExecutionRepository: repository,
+		AllNamespaces:       options.AllNamespaces,
+		Namespaces:          options.Namespaces,
+		CurrentNamespace:    connection.DefaultNamespace,
 	})
 
 	programOptions := []tea.ProgramOption{tea.WithContext(ctx), tea.WithAltScreen()}
@@ -92,6 +93,10 @@ func scopeLabel(options Options, defaultNamespace string) string {
 	return defaultNamespace
 }
 
+type WorkflowExecutionRepository interface {
+	StartExecution(context.Context, uint64, string, string, string) <-chan workflows.ExecutionUpdate
+}
+
 type ResourceRepository interface {
 	Discover(context.Context) (map[resources.Kind]bool, error)
 	Start(context.Context, resources.Request) <-chan resources.Snapshot
@@ -99,17 +104,18 @@ type ResourceRepository interface {
 }
 
 type ModelOptions struct {
-	Generation         uint64
-	Context            string
-	Namespace          string
-	InstanceID         string
-	Updates            <-chan workflows.Snapshot
-	Cancel             context.CancelFunc
-	RootContext        context.Context
-	ResourceRepository ResourceRepository
-	AllNamespaces      bool
-	Namespaces         []string
-	CurrentNamespace   string
+	Generation          uint64
+	Context             string
+	Namespace           string
+	InstanceID          string
+	Updates             <-chan workflows.Snapshot
+	Cancel              context.CancelFunc
+	RootContext         context.Context
+	ResourceRepository  ResourceRepository
+	ExecutionRepository WorkflowExecutionRepository
+	AllNamespaces       bool
+	Namespaces          []string
+	CurrentNamespace    string
 }
 
 type Model struct {
@@ -120,28 +126,41 @@ type Model struct {
 	updates    <-chan workflows.Snapshot
 	cancel     context.CancelFunc
 
-	rootContext        context.Context
-	resourceRepository ResourceRepository
-	allNamespaces      bool
-	namespaces         []string
-	currentNamespace   string
-	resourceGeneration uint64
-	resourceUpdates    <-chan resources.Snapshot
-	resourceCancel     context.CancelFunc
-	resourceDescriptor resources.Descriptor
-	resourceItems      []resources.Summary
-	resourceState      string
-	resourceErrors     map[string]string
-	resourceError      error
-	availableResources map[resources.Kind]bool
-	resourceNotice     string
-	detail             *resources.Detail
-	detailError        error
-	detailLoading      bool
-	detailVisible      bool
-	detailYAML         bool
-	detailScroll       int
-	detailUID          string
+	rootContext         context.Context
+	resourceRepository  ResourceRepository
+	executionRepository WorkflowExecutionRepository
+	allNamespaces       bool
+	namespaces          []string
+	currentNamespace    string
+	resourceGeneration  uint64
+	resourceUpdates     <-chan resources.Snapshot
+	resourceCancel      context.CancelFunc
+	resourceDescriptor  resources.Descriptor
+	resourceItems       []resources.Summary
+	resourceState       string
+	resourceErrors      map[string]string
+	resourceError       error
+	availableResources  map[resources.Kind]bool
+	resourceNotice      string
+	detail              *resources.Detail
+	detailError         error
+	detailLoading       bool
+	detailVisible       bool
+	detailYAML          bool
+	detailScroll        int
+	detailUID           string
+
+	executionGeneration uint64
+	executionUpdates    <-chan workflows.ExecutionUpdate
+	executionCancel     context.CancelFunc
+	execution           *workflows.Execution
+	executionError      error
+	executionStale      bool
+	executionVisible    bool
+	executionMode       string
+	executionCursor     int
+	executionSelectedID string
+	executionScroll     int
 
 	connectionState workflows.ConnectionState
 	items           []workflows.Summary
@@ -184,6 +203,12 @@ type detailMessage struct {
 	err        error
 }
 
+type executionMessage struct {
+	update  workflows.ExecutionUpdate
+	updates <-chan workflows.ExecutionUpdate
+	open    bool
+}
+
 func NewModel(options ModelOptions) Model {
 	workflowDescriptor, _ := resources.Lookup("workflows")
 	available := make(map[resources.Kind]bool)
@@ -195,21 +220,23 @@ func NewModel(options ModelOptions) Model {
 		rootContext = context.Background()
 	}
 	return Model{
-		generation:         options.Generation,
-		context:            options.Context,
-		namespace:          options.Namespace,
-		instanceID:         options.InstanceID,
-		updates:            options.Updates,
-		cancel:             options.Cancel,
-		rootContext:        rootContext,
-		resourceRepository: options.ResourceRepository,
-		allNamespaces:      options.AllNamespaces,
-		namespaces:         append([]string(nil), options.Namespaces...),
-		currentNamespace:   options.CurrentNamespace,
-		resourceDescriptor: workflowDescriptor,
-		availableResources: available,
-		connectionState:    workflows.StateLoading,
-		resourceState:      "loading",
+		generation:          options.Generation,
+		context:             options.Context,
+		namespace:           options.Namespace,
+		instanceID:          options.InstanceID,
+		updates:             options.Updates,
+		cancel:              options.Cancel,
+		rootContext:         rootContext,
+		resourceRepository:  options.ResourceRepository,
+		executionRepository: options.ExecutionRepository,
+		allNamespaces:       options.AllNamespaces,
+		namespaces:          append([]string(nil), options.Namespaces...),
+		currentNamespace:    options.CurrentNamespace,
+		resourceDescriptor:  workflowDescriptor,
+		availableResources:  available,
+		connectionState:     workflows.StateLoading,
+		resourceState:       "loading",
+		executionMode:       "tree",
 	}
 }
 
@@ -232,6 +259,13 @@ func waitForResourceSnapshot(updates <-chan resources.Snapshot) tea.Cmd {
 	return func() tea.Msg {
 		snapshot, open := <-updates
 		return resourceSnapshotMessage{snapshot: snapshot, updates: updates, open: open}
+	}
+}
+
+func waitForExecution(updates <-chan workflows.ExecutionUpdate) tea.Cmd {
+	return func() tea.Msg {
+		update, open := <-updates
+		return executionMessage{update: update, updates: updates, open: open}
 	}
 }
 
@@ -302,6 +336,20 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return model, nil
+	case executionMessage:
+		if !message.open {
+			return model, nil
+		}
+		if message.update.Generation == model.executionGeneration {
+			model.executionStale = message.update.Stale
+			model.executionError = message.update.Err
+			if !message.update.Stale && message.update.Err == nil {
+				execution := message.update.Execution
+				model.execution = &execution
+				model.reconcileExecutionSelection()
+			}
+		}
+		return model, waitForExecution(message.updates)
 	case tea.WindowSizeMsg:
 		model.width = message.Width
 		model.height = message.Height
@@ -350,6 +398,9 @@ func (model Model) updateMouse(mouse tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (model Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if model.executionVisible {
+		return model.updateExecutionKey(key)
+	}
 	if model.detailVisible {
 		return model.updateDetailKey(key)
 	}
@@ -442,18 +493,17 @@ func (model Model) updateDetailKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (model Model) openSelectedDetail() (tea.Model, tea.Cmd) {
-	if model.resourceRepository == nil || model.itemCount() == 0 {
+	if model.itemCount() == 0 {
+		return model, nil
+	}
+	if model.resourceDescriptor.Kind == resources.Workflows {
+		return model.openWorkflowExecution()
+	}
+	if model.resourceRepository == nil {
 		return model, nil
 	}
 	var namespace, name, uid string
-	if model.resourceDescriptor.Kind == resources.Workflows {
-		items := model.filteredItems()
-		if model.cursor >= len(items) {
-			return model, nil
-		}
-		item := items[model.cursor]
-		namespace, name, uid = item.Namespace, item.Name, item.UID
-	} else {
+	{
 		items := model.filteredResourceItems()
 		if model.cursor >= len(items) {
 			return model, nil
@@ -627,6 +677,9 @@ func (model Model) View() string {
 	width := model.width
 	if width <= 0 {
 		width = 100
+	}
+	if model.executionVisible {
+		return model.executionView(width)
 	}
 	if model.detailVisible {
 		return model.detailView(width)

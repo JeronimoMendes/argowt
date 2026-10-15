@@ -96,6 +96,20 @@ type fakeResourceRepository struct {
 	requests chan resources.Request
 }
 
+type fakeExecutionRepository struct {
+	updates   chan workflows.ExecutionUpdate
+	namespace string
+	name      string
+	uid       string
+}
+
+func (repository *fakeExecutionRepository) StartExecution(_ context.Context, generation uint64, namespace, name, uid string) <-chan workflows.ExecutionUpdate {
+	repository.namespace = namespace
+	repository.name = name
+	repository.uid = uid
+	return repository.updates
+}
+
 func (repository *fakeResourceRepository) Discover(context.Context) (map[resources.Kind]bool, error) {
 	return map[resources.Kind]bool{resources.Workflows: true, resources.WorkflowTemplates: true}, nil
 }
@@ -147,11 +161,62 @@ func TestCommandPaletteSwitchesResource(t *testing.T) {
 	}
 }
 
+func TestEnterOpensLiveWorkflowExecutionAndPreservesSelection(t *testing.T) {
+	executionRepository := &fakeExecutionRepository{updates: make(chan workflows.ExecutionUpdate, 2)}
+	model := NewModel(ModelOptions{
+		Generation:          1,
+		RootContext:         context.Background(),
+		ExecutionRepository: executionRepository,
+	})
+	model.connectionState = workflows.StateFresh
+	model.items = []workflows.Summary{{Namespace: "argo", Name: "example", UID: "uid-1", Phase: "Running"}}
+
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if !model.executionVisible || command == nil {
+		t.Fatalf("execution did not open: %+v", model)
+	}
+	executionRepository.updates <- workflows.ExecutionUpdate{
+		Generation: model.executionGeneration,
+		Execution: workflows.Execution{
+			Namespace: "argo",
+			Name:      "example",
+			Phase:     "Running",
+			Roots:     []string{"root"},
+			Nodes: map[string]workflows.Node{
+				"root":  {ID: "root", DisplayName: "root", Phase: "Running", Children: []string{"child"}},
+				"child": {ID: "child", DisplayName: "child", Phase: "Pending", Parents: []string{"root"}},
+			},
+		},
+	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	if model.executionSelectedID != "root" || !strings.Contains(model.View(), "child") {
+		t.Fatalf("execution view not rendered: selected=%q view=%q", model.executionSelectedID, model.View())
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = updated.(Model)
+	if model.executionSelectedID != "child" {
+		t.Fatalf("selected node = %q", model.executionSelectedID)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(Model)
+	if model.executionMode != "dag" || model.executionSelectedID != "child" {
+		t.Fatalf("selection was not preserved across mode switch: mode=%s selected=%s", model.executionMode, model.executionSelectedID)
+	}
+	if executionRepository.namespace != "argo" || executionRepository.name != "example" || executionRepository.uid != "uid-1" {
+		t.Fatalf("unexpected execution identity: %+v", executionRepository)
+	}
+}
+
 func TestEnterOpensMetadataAndYAMLDetail(t *testing.T) {
 	repository := &fakeResourceRepository{requests: make(chan resources.Request, 1)}
 	model := NewModel(ModelOptions{Generation: 1, RootContext: context.Background(), ResourceRepository: repository})
-	model.connectionState = workflows.StateFresh
-	model.items = []workflows.Summary{{Namespace: "argo", Name: "example", UID: "uid-1", Phase: "Running"}}
+	descriptor, _ := resources.Lookup("wft")
+	model.resourceDescriptor = descriptor
+	model.resourceState = "fresh"
+	model.resourceItems = []resources.Summary{{Kind: resources.WorkflowTemplates, Namespace: "argo", Name: "example", UID: "uid-1", Status: "Ready"}}
 
 	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = updated.(Model)

@@ -15,6 +15,7 @@
 - Resource command palette for Workflows, WorkflowTemplates, ClusterWorkflowTemplates, CronWorkflows, EventSources, Sensors, and EventBuses.
 - Dynamic Argo Events discovery: missing optional CRDs are hidden and forbidden resource scopes remain isolated.
 - Read-only metadata, labels, annotations, owners, conditions, and YAML detail views with UID identity checks.
+- Live workflow execution visualization with tree, DAG, and table modes plus node timing, messages, inputs, outputs, artifacts, retries, pod placement, and stable selection across views.
 - Bounded reconnect backoff and resource-version recovery.
 - Cluster-free unit tests using narrow fake clients.
 
@@ -55,7 +56,7 @@ argowt --all-namespaces
 argowt --context development --instanceid controller-a
 ```
 
-Inside the browser, use `j`/`k` or arrow keys to navigate, `:` to switch resource types, `/` to filter, `?` for help, and `q` to quit.
+Inside the browser, use `j`/`k` or arrow keys to navigate, `:` to switch resource types, `/` to filter, `Enter` to open a workflow or resource, `?` for help, and `q` to quit. Workflow execution views use `t`, `d`, and `l` for tree, DAG, and table modes.
 
 ```text
 argowt [flags]

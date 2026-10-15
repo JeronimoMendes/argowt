@@ -48,6 +48,7 @@ type Snapshot struct {
 }
 
 type WorkflowClient interface {
+	Get(context.Context, string, metav1.GetOptions) (*wfv1.Workflow, error)
 	List(context.Context, metav1.ListOptions) (*wfv1.WorkflowList, error)
 	Watch(context.Context, metav1.ListOptions) (watch.Interface, error)
 }

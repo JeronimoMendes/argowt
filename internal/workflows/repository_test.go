@@ -30,6 +30,20 @@ type fakeWorkflowClient struct {
 	lastOptions metav1.ListOptions
 }
 
+func (client *fakeWorkflowClient) Get(_ context.Context, name string, _ metav1.GetOptions) (*wfv1.Workflow, error) {
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.listErr != nil {
+		return nil, client.listErr
+	}
+	for index := range client.list.Items {
+		if client.list.Items[index].Name == name {
+			return client.list.Items[index].DeepCopy(), nil
+		}
+	}
+	return nil, apierrors.NewNotFound(schema.GroupResource{Group: "argoproj.io", Resource: "workflows"}, name)
+}
+
 func (client *fakeWorkflowClient) List(_ context.Context, options metav1.ListOptions) (*wfv1.WorkflowList, error) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
