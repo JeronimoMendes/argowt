@@ -108,6 +108,8 @@ type Model struct {
 	cursor          int
 	filtering       bool
 	query           string
+	activeFilter    filter.Expression
+	filterError     error
 	showHelp        bool
 	width           int
 	height          int
@@ -177,9 +179,13 @@ func (model Model) updateMouse(mouse tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if mouse.Action != tea.MouseActionPress {
 			break
 		}
-		row := mouse.Y - (4 + len(model.partialErrors))
+		noticeLines := len(model.partialErrors)
+		if model.filterError != nil {
+			noticeLines++
+		}
+		row := mouse.Y - (4 + noticeLines)
 		items := model.filteredItems()
-		visibleRows := model.height - (4 + len(model.partialErrors)) - 3
+		visibleRows := model.height - (4 + noticeLines) - 3
 		if visibleRows < 1 || model.height == 0 {
 			visibleRows = len(items)
 		}
@@ -201,6 +207,7 @@ func (model Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "esc":
 			model.filtering = false
 			model.query = ""
+			model.updateFilter()
 			model.cursor = 0
 		case "enter":
 			model.filtering = false
@@ -208,11 +215,13 @@ func (model Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			query := []rune(model.query)
 			if len(query) > 0 {
 				model.query = string(query[:len(query)-1])
+				model.updateFilter()
 				model.cursor = 0
 			}
 		default:
 			if key.Type == tea.KeyRunes {
 				model.query += string(key.Runes)
+				model.updateFilter()
 				model.cursor = 0
 			}
 		}
@@ -237,6 +246,7 @@ func (model Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		model.filtering = true
 	case "esc":
 		model.query = ""
+		model.updateFilter()
 		model.cursor = 0
 	case "?":
 		model.showHelp = !model.showHelp
@@ -263,13 +273,30 @@ func (model *Model) clampCursor() {
 	}
 }
 
+func (model *Model) updateFilter() {
+	parsed, err := filter.Parse(model.query)
+	model.filterError = err
+	if err == nil {
+		model.activeFilter = parsed
+	}
+}
+
 func (model Model) filteredItems() []workflows.Summary {
-	if strings.TrimSpace(model.query) == "" {
+	if model.activeFilter.Empty() {
 		return model.items
 	}
 	items := make([]workflows.Summary, 0, len(model.items))
+	now := time.Now()
 	for _, item := range model.items {
-		if filter.Match(model.query, item.Name, item.Namespace, item.DisplayPhase(), item.InstanceID) {
+		if model.activeFilter.Match(filter.Document{
+			Name:              item.Name,
+			Namespace:         item.Namespace,
+			Status:            item.DisplayPhase(),
+			Template:          item.Template,
+			InstanceID:        item.InstanceID,
+			Labels:            item.Labels,
+			CreationTimestamp: item.CreationTimestamp,
+		}, now) {
 			items = append(items, item)
 		}
 	}
@@ -289,6 +316,9 @@ func (model Model) View() string {
 		fmt.Fprintf(&output, "  filter: /%s", ui.Sanitize(model.query))
 	}
 	output.WriteString("\n")
+	if model.filterError != nil {
+		fmt.Fprintf(&output, "! filter: %s (previous valid filter remains active)\n", ui.Sanitize(model.filterError.Error()))
+	}
 
 	if model.fatalError != nil {
 		fmt.Fprintf(&output, "\n! %s\n", ui.Sanitize(model.fatalError.Error()))
@@ -339,6 +369,7 @@ func (model Model) View() string {
 
 	if model.showHelp {
 		output.WriteString("\nNavigation: j/k or arrows · g/G first/last · / filter · Esc clear · q quit · ? hide help\n")
+		output.WriteString("Filters: fuzzy text · status=Running · namespace!=argo · age>10m · label:team=payments\n")
 	} else if model.filtering {
 		output.WriteString("\nFilter: type to search · Enter apply · Esc cancel\n")
 	} else {

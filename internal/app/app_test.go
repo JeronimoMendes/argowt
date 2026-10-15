@@ -68,6 +68,28 @@ func TestFilteringAndNavigation(t *testing.T) {
 	}
 }
 
+func TestInvalidFilterKeepsPreviousValidExpression(t *testing.T) {
+	model := NewModel(ModelOptions{Generation: 1})
+	model.items = []workflows.Summary{
+		{Name: "running", Phase: "Running"},
+		{Name: "failed", Phase: "Failed"},
+	}
+	model.query = "status=Running"
+	model.updateFilter()
+	if got := model.filteredItems(); len(got) != 1 || got[0].Name != "running" {
+		t.Fatalf("valid filter result = %+v", got)
+	}
+
+	model.query = "status="
+	model.updateFilter()
+	if model.filterError == nil {
+		t.Fatal("invalid filter should report an error")
+	}
+	if got := model.filteredItems(); len(got) != 1 || got[0].Name != "running" {
+		t.Fatalf("previous filter was not retained: %+v", got)
+	}
+}
+
 func TestViewSanitizesAPIValues(t *testing.T) {
 	model := NewModel(ModelOptions{Generation: 1, Context: "safe\x1b[31m"})
 	model.connectionState = workflows.StateFresh

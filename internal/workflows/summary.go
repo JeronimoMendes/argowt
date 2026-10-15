@@ -22,11 +22,17 @@ type Summary struct {
 	CreationTimestamp time.Time
 	StartedAt         time.Time
 	InstanceID        string
+	Template          string
+	Labels            map[string]string
 }
 
 func Normalize(workflow *wfv1.Workflow) Summary {
 	if workflow == nil {
 		return Summary{}
+	}
+	template := workflow.Spec.Entrypoint
+	if workflow.Spec.WorkflowTemplateRef != nil {
+		template = workflow.Spec.WorkflowTemplateRef.Name
 	}
 	return Summary{
 		Namespace:         workflow.Namespace,
@@ -38,7 +44,20 @@ func Normalize(workflow *wfv1.Workflow) Summary {
 		CreationTimestamp: workflow.CreationTimestamp.Time,
 		StartedAt:         workflow.Status.StartedAt.Time,
 		InstanceID:        workflow.Labels[ControllerInstanceIDLabel],
+		Template:          template,
+		Labels:            copyLabels(workflow.Labels),
 	}
+}
+
+func copyLabels(source map[string]string) map[string]string {
+	if len(source) == 0 {
+		return nil
+	}
+	copied := make(map[string]string, len(source))
+	for key, value := range source {
+		copied[key] = value
+	}
+	return copied
 }
 
 func (s Summary) DisplayPhase() string {
