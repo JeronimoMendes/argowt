@@ -11,6 +11,7 @@
 - Live active-workflow list/watch with deterministic ordering.
 - Adaptive all-namespace access with namespace fallback under restricted RBAC.
 - Visible fresh, partial-authorization, stale, reconnecting, and fatal states.
+- Adaptive light/dark terminal colors, highlighted selections, and symbol-plus-text statuses that remain understandable without color.
 - Keyboard and mouse navigation with fuzzy and structured filtering.
 - Resource command palette for Workflows, WorkflowTemplates, ClusterWorkflowTemplates, CronWorkflows, EventSources, Sensors, and EventBuses.
 - Dynamic Argo Events discovery: missing optional CRDs are hidden and forbidden resource scopes remain isolated.

@@ -4,6 +4,8 @@ package ui
 import (
 	"strings"
 	"unicode"
+
+	"github.com/charmbracelet/x/ansi"
 )
 
 // Sanitize replaces terminal control characters so API-provided values cannot
@@ -19,6 +21,15 @@ func Sanitize(value string) string {
 		output.WriteRune(character)
 	}
 	return output.String()
+}
+
+// TruncateStyled truncates text by terminal cell width while preserving ANSI
+// styling sequences.
+func TruncateStyled(value string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	return ansi.Truncate(value, width, "…")
 }
 
 func Truncate(value string, width int) string {

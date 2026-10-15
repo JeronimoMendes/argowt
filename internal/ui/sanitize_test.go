@@ -9,6 +9,14 @@ func TestSanitizeRemovesTerminalControls(t *testing.T) {
 	}
 }
 
+func TestTruncateStyledPreservesEscapeSequences(t *testing.T) {
+	styled := "\x1b[31mabcdef\x1b[0m"
+	got := TruncateStyled(styled, 4)
+	if got == "" || got[len(got)-1] == '\x1b' {
+		t.Fatalf("TruncateStyled() = %q", got)
+	}
+}
+
 func TestTruncate(t *testing.T) {
 	if got := Truncate("workflow", 5); got != "work…" {
 		t.Fatalf("Truncate() = %q", got)

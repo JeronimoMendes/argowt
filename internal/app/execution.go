@@ -171,21 +171,23 @@ func (model Model) executionView(width int) string {
 	if model.execution != nil && model.notificationManager != nil && model.notificationManager.IsWatched(model.execution.UID) {
 		watchIndicator = "  🔔 notifications on"
 	}
-	fmt.Fprintf(&output, "argowt  workflow: %s  mode: %s  phase: %s%s\n",
-		ui.Sanitize(name), model.executionMode, ui.Sanitize(phase), watchIndicator)
-	output.WriteString("t tree · d DAG · l table · Tab next view · j/k navigate · n toggle notify · N configure · Esc back · q quit\n")
+	fmt.Fprintf(&output, "%s  %s: %s  %s: %s  %s: %s%s\n",
+		theme.Title.Render("argowt"), theme.Muted.Render("workflow"), theme.Accent.Render(ui.Sanitize(name)),
+		theme.Muted.Render("mode"), theme.Info.Render(model.executionMode),
+		theme.Muted.Render("phase"), theme.Status(ui.Sanitize(phase), phase), theme.Warning.Render(watchIndicator))
+	output.WriteString(theme.Muted.Render("t tree · d DAG · l table · Tab next view · j/k navigate · n toggle notify · N configure · Esc back · q quit") + "\n")
 	if model.executionStale {
-		output.WriteString("! execution data is stale; reconnecting\n")
+		output.WriteString(theme.Warning.Render("! execution data is stale; reconnecting") + "\n")
 	}
 	if model.executionError != nil {
-		fmt.Fprintf(&output, "! %s\n", ui.Sanitize(model.executionError.Error()))
+		fmt.Fprintf(&output, "%s\n", theme.Error.Render("! "+ui.Sanitize(model.executionError.Error())))
 	}
 	if model.execution == nil {
-		output.WriteString("\nLoading workflow execution…\n")
+		output.WriteString("\n" + theme.Info.Render("◌ Loading workflow execution…") + "\n")
 		return output.String()
 	}
 	if model.execution.Message != "" {
-		fmt.Fprintf(&output, "message: %s\n", ui.Truncate(ui.Sanitize(model.execution.Message), max(1, width-9)))
+		fmt.Fprintf(&output, "%s %s\n", theme.Muted.Render("message:"), theme.Warning.Render(ui.Truncate(ui.Sanitize(model.execution.Message), max(1, width-9))))
 	}
 	if len(model.execution.Nodes) == 0 {
 		output.WriteString("\nNo node status is available for this workflow.\n")
@@ -207,20 +209,31 @@ func (model Model) executionView(width int) string {
 	}
 	end := min(len(lines), start+listHeight)
 	output.WriteByte('\n')
+	if model.executionMode == "table" && width >= 65 {
+		output.WriteString(theme.TableHeader.Render("  STATUS       TYPE          NODE                            DURATION") + "\n")
+	}
 	for _, line := range lines[start:end] {
-		output.WriteString(ui.Truncate(line, width))
+		output.WriteString(line)
 		output.WriteByte('\n')
 	}
 
 	if node, found := model.execution.Nodes[model.executionSelectedID]; found {
-		output.WriteString("\n── Node details ──\n")
+		output.WriteString("\n" + theme.PanelTitle.Render("── Node details ──") + "\n")
 		detailLines := nodeDetailLines(node)
 		remaining := model.height - strings.Count(output.String(), "\n") - 1
 		if remaining < 1 || model.height == 0 {
 			remaining = len(detailLines)
 		}
-		for _, line := range detailLines[:min(len(detailLines), remaining)] {
-			output.WriteString(ui.Truncate(ui.Sanitize(line), width))
+		for index, line := range detailLines[:min(len(detailLines), remaining)] {
+			rendered := ui.Truncate(ui.Sanitize(line), width)
+			if index == 0 {
+				rendered = theme.Status(rendered, node.Phase)
+			} else if strings.HasPrefix(line, "message:") || strings.HasPrefix(line, "result:") {
+				rendered = theme.Warning.Render(rendered)
+			} else {
+				rendered = theme.Muted.Render(rendered)
+			}
+			output.WriteString(rendered)
 			output.WriteByte('\n')
 		}
 	}
@@ -246,8 +259,15 @@ func (model Model) executionLines(width int) []string {
 			if index == model.executionCursor {
 				prefix = ">"
 			}
-			lines = append(lines, fmt.Sprintf("%s %-12s %-13s %-31s %s",
-				prefix, nodeStatus(node.Phase), node.Type, node.Label(), formatDuration(node.Duration(now))))
+			line := fmt.Sprintf("%s %-12s %-13s %-31s %s",
+				prefix, nodeStatus(node.Phase), node.Type, node.Label(), formatDuration(node.Duration(now)))
+			line = ui.Truncate(line, width)
+			if index == model.executionCursor {
+				line = theme.Row(line, true)
+			} else {
+				line = theme.Status(line, node.Phase)
+			}
+			lines = append(lines, line)
 		}
 		if width >= 65 {
 			// Remove the header to preserve cursor-to-line correspondence for the
@@ -273,7 +293,13 @@ func (model Model) executionLines(width int) []string {
 			if index == model.executionCursor {
 				prefix = ">"
 			}
-			lines = append(lines, fmt.Sprintf("%s %s %s%s", prefix, nodeStatus(row.Node.Phase), row.Node.Label(), edges))
+			line := ui.Truncate(fmt.Sprintf("%s %s %s%s", prefix, nodeStatus(row.Node.Phase), row.Node.Label(), edges), width)
+			if index == model.executionCursor {
+				line = theme.Row(line, true)
+			} else {
+				line = theme.Status(line, row.Node.Phase)
+			}
+			lines = append(lines, line)
 		}
 		return lines
 	default:
@@ -292,8 +318,14 @@ func (model Model) executionLines(width int) []string {
 			if row.Cycle {
 				cycle = " [cycle]"
 			}
-			lines = append(lines, fmt.Sprintf("%s %s %s%s  (%s)%s",
-				prefix, nodeStatus(row.Node.Phase), branch, row.Node.Label(), row.Node.Type, cycle))
+			line := ui.Truncate(fmt.Sprintf("%s %s %s%s  (%s)%s",
+				prefix, nodeStatus(row.Node.Phase), branch, row.Node.Label(), row.Node.Type, cycle), width)
+			if index == model.executionCursor {
+				line = theme.Row(line, true)
+			} else {
+				line = theme.Status(line, row.Node.Phase)
+			}
+			lines = append(lines, line)
 		}
 		return lines
 	}

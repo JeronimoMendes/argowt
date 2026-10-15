@@ -19,6 +19,8 @@ import (
 	"argowt/internal/workflows"
 )
 
+var theme = ui.DefaultTheme()
+
 // Options contains process-level settings established by the CLI. It contains
 // no Kubernetes clients, credentials, or persisted resource data.
 type Options struct {
@@ -1069,28 +1071,32 @@ func (model Model) View() string {
 		return model.detailView(width)
 	}
 	var output strings.Builder
-	fmt.Fprintf(&output, "argowt  view: %s  context: %s  namespaces: %s  instance: %s\n",
-		ui.Sanitize(model.resourceDescriptor.Title), ui.Sanitize(model.context), ui.Sanitize(model.namespace), displayInstance(model.instanceID))
-	fmt.Fprintf(&output, "status: %s", model.currentState())
+	fmt.Fprintf(&output, "%s  %s: %s  %s: %s  %s: %s  %s: %s\n",
+		theme.Title.Render("argowt"),
+		theme.Muted.Render("view"), theme.Accent.Render(ui.Sanitize(model.resourceDescriptor.Title)),
+		theme.Muted.Render("context"), theme.Info.Render(ui.Sanitize(model.context)),
+		theme.Muted.Render("namespaces"), theme.Info.Render(ui.Sanitize(model.namespace)),
+		theme.Muted.Render("instance"), theme.Info.Render(displayInstance(model.instanceID)))
+	fmt.Fprintf(&output, "%s: %s", theme.Muted.Render("status"), theme.Status(model.currentState(), model.currentState()))
 	if model.query != "" || model.filtering {
 		fmt.Fprintf(&output, "  filter: /%s", ui.Sanitize(model.query))
 	}
 	output.WriteString("\n")
 	if model.notificationWarning != nil {
-		fmt.Fprintf(&output, "! notification: %s\n", ui.Sanitize(model.notificationWarning.Error()))
+		fmt.Fprintf(&output, "%s\n", theme.Error.Render("! notification: "+ui.Sanitize(model.notificationWarning.Error())))
 	}
 	if len(model.notifications) > 0 {
 		latest := model.notifications[len(model.notifications)-1]
-		fmt.Fprintf(&output, "🔔 %s/%s: %s → %s\n", ui.Sanitize(latest.Namespace), ui.Sanitize(latest.Name), ui.Sanitize(latest.From), ui.Sanitize(latest.To))
+		fmt.Fprintf(&output, "%s\n", theme.Warning.Render(fmt.Sprintf("🔔 %s/%s: %s → %s", ui.Sanitize(latest.Namespace), ui.Sanitize(latest.Name), ui.Sanitize(latest.From), ui.Sanitize(latest.To))))
 	}
 	if model.resourceNotice != "" {
-		fmt.Fprintf(&output, "! %s\n", ui.Sanitize(model.resourceNotice))
+		fmt.Fprintf(&output, "%s\n", theme.Info.Render("◆ "+ui.Sanitize(model.resourceNotice)))
 	}
 	if model.filterError != nil {
-		fmt.Fprintf(&output, "! filter: %s (previous valid filter remains active)\n", ui.Sanitize(model.filterError.Error()))
+		fmt.Fprintf(&output, "%s\n", theme.Warning.Render("! filter: "+ui.Sanitize(model.filterError.Error())+" (previous valid filter remains active)"))
 	}
 	if currentError := model.currentError(); currentError != nil {
-		fmt.Fprintf(&output, "\n! %s\n", ui.Sanitize(currentError.Error()))
+		fmt.Fprintf(&output, "\n%s\n", theme.Error.Render("! "+ui.Sanitize(currentError.Error())))
 	}
 	if errorsByScope := model.currentErrors(); len(errorsByScope) > 0 {
 		keys := make([]string, 0, len(errorsByScope))
@@ -1099,11 +1105,11 @@ func (model Model) View() string {
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			fmt.Fprintf(&output, "! %s: %s\n", ui.Sanitize(key), ui.Sanitize(errorsByScope[key]))
+			fmt.Fprintf(&output, "%s\n", theme.Warning.Render("! "+ui.Sanitize(key)+": "+ui.Sanitize(errorsByScope[key])))
 		}
 	}
 
-	output.WriteString("\n  STATUS        NAMESPACE           NAME                          AGE\n")
+	output.WriteString("\n" + theme.TableHeader.Render("  STATUS        NAMESPACE           NAME                          AGE") + "\n")
 	if model.resourceDescriptor.Kind == resources.Workflows {
 		model.renderWorkflows(&output, width)
 	} else {
@@ -1111,45 +1117,48 @@ func (model Model) View() string {
 	}
 
 	if model.palette {
-		output.WriteString("\nCommand: :" + ui.Sanitize(model.command) + "\n")
+		output.WriteString("\n" + theme.PanelTitle.Render("Command palette") + "  " + theme.ActiveInput.Render(":"+ui.Sanitize(model.command)) + "\n")
 		commands := resources.Commands(model.availableResources, model.command)
 		for index, descriptor := range commands {
 			cursor := " "
 			if index == model.paletteCursor {
 				cursor = ">"
 			}
-			fmt.Fprintf(&output, "%s :%-9s %s\n", cursor, descriptor.ShortName, descriptor.Title)
+			line := fmt.Sprintf("%s :%-9s %s", cursor, descriptor.ShortName, descriptor.Title)
+			output.WriteString(theme.Row(line, index == model.paletteCursor) + "\n")
 		}
 		if len(commands) == 0 {
 			output.WriteString("  No matching resource command.\n")
 		}
-		output.WriteString("Enter switch · Esc close\n")
+		output.WriteString(theme.Muted.Render("Enter switch · Esc close") + "\n")
 	} else if model.showHelp {
-		output.WriteString("\nNavigation: j/k or arrows · g/G first/last · Enter open · s submit template · n toggle notify · N configure · : resources · / filter · Esc clear · q quit · ? hide help\n")
-		output.WriteString("Filters: fuzzy text · status=Running · namespace!=argo · age>10m · label:team=payments\n")
+		output.WriteString("\n" + theme.PanelTitle.Render("Keyboard") + "\n")
+		output.WriteString(theme.Muted.Render("j/k or arrows · g/G first/last · Enter open · s submit template · n toggle notify · N configure · : resources · / filter · Esc clear · q quit · ? hide help") + "\n")
+		output.WriteString(theme.Muted.Render("Filters: fuzzy text · status=Running · namespace!=argo · age>10m · label:team=payments") + "\n")
 	} else if model.filtering {
-		output.WriteString("\nFilter: type to search · Enter apply · Esc cancel\n")
+		output.WriteString("\n" + theme.ActiveInput.Render("Filter: /"+ui.Sanitize(model.query)) + "\n")
+		output.WriteString(theme.Muted.Render("Type to search · Enter apply · Esc cancel") + "\n")
 	} else {
-		output.WriteString("\nj/k navigate · Enter open · s submit · n notify · N configure · : resources · / filter · ? help · q quit\n")
+		output.WriteString("\n" + theme.Muted.Render("j/k navigate · Enter open · s submit · n notify · N configure · : resources · / filter · ? help · q quit") + "\n")
 	}
 	return output.String()
 }
 
 func (model Model) submissionView(width int) string {
 	var output strings.Builder
-	fmt.Fprintf(&output, "argowt  submit from %s/%s\n\n", sourceKind(model.submissionForm.Source), ui.Sanitize(model.submissionForm.Source.Name))
+	fmt.Fprintf(&output, "%s  %s %s/%s\n\n", theme.Title.Render("argowt"), theme.PanelTitle.Render("Submit workflow from"), sourceKind(model.submissionForm.Source), theme.Accent.Render(ui.Sanitize(model.submissionForm.Source.Name)))
 	switch model.submissionStage {
 	case "loading":
-		output.WriteString("Loading template parameters…\n\nEsc cancel\n")
+		output.WriteString(theme.Info.Render("◌ Loading template parameters…") + "\n\n" + theme.Muted.Render("Esc cancel") + "\n")
 	case "error":
-		fmt.Fprintf(&output, "! %s\n\nEnter/Esc close\n", ui.Sanitize(model.submissionError.Error()))
+		fmt.Fprintf(&output, "%s\n\n%s\n", theme.Error.Render("! "+ui.Sanitize(model.submissionError.Error())), theme.Muted.Render("Enter/Esc close"))
 	case "submitting":
-		output.WriteString("Submitting workflow…\n")
+		output.WriteString(theme.Info.Render("◌ Submitting workflow…") + "\n")
 	case "complete":
-		fmt.Fprintf(&output, "✓ Submitted workflow %s/%s\n\nEnter/Esc close\n",
-			ui.Sanitize(model.submissionResult.Namespace), ui.Sanitize(model.submissionResult.Name))
+		fmt.Fprintf(&output, "%s\n\n%s\n",
+			theme.Success.Render("✓ Submitted workflow "+ui.Sanitize(model.submissionResult.Namespace)+"/"+ui.Sanitize(model.submissionResult.Name)), theme.Muted.Render("Enter/Esc close"))
 	case "confirm":
-		fmt.Fprintf(&output, "Confirm submission\n  context: %s\n  namespace: %s\n  source: %s/%s\n",
+		fmt.Fprintf(&output, "%s\n  context: %s\n  namespace: %s\n  source: %s/%s\n", theme.PanelTitle.Render("Confirm submission"),
 			ui.Sanitize(model.context), ui.Sanitize(model.submissionForm.DestinationNamespace), sourceKind(model.submissionForm.Source), ui.Sanitize(model.submissionForm.Source.Name))
 		for _, parameter := range model.submissionForm.Parameters {
 			fmt.Fprintf(&output, "  %s=%s\n", ui.Sanitize(parameter.Name), ui.Sanitize(model.submissionValues[parameter.Name]))
@@ -1157,7 +1166,7 @@ func (model Model) submissionView(width int) string {
 		if model.submissionError != nil {
 			fmt.Fprintf(&output, "\n! %s\n", ui.Sanitize(model.submissionError.Error()))
 		}
-		output.WriteString("\ny/Enter submit · n/Esc edit\n")
+		output.WriteString("\n" + theme.Muted.Render("y/Enter submit · n/Esc edit") + "\n")
 	default:
 		fields := []struct {
 			name        string
@@ -1182,7 +1191,8 @@ func (model Model) submissionView(width int) string {
 			if field.required {
 				required = " *"
 			}
-			fmt.Fprintf(&output, "%s %s%s: %s\n", cursor, ui.Sanitize(field.name), required, ui.Sanitize(field.value))
+			line := fmt.Sprintf("%s %s%s: %s", cursor, ui.Sanitize(field.name), required, ui.Sanitize(field.value))
+			output.WriteString(theme.Row(line, index == model.submissionFocus) + "\n")
 			if field.description != "" {
 				fmt.Fprintf(&output, "    %s\n", ui.Sanitize(field.description))
 			}
@@ -1190,11 +1200,11 @@ func (model Model) submissionView(width int) string {
 		if model.submissionError != nil {
 			fmt.Fprintf(&output, "\n! %s\n", ui.Sanitize(model.submissionError.Error()))
 		}
-		output.WriteString("\nTab/↑/↓ fields · Enter next/confirm · Ctrl+S confirm · Esc cancel\n")
+		output.WriteString("\n" + theme.Muted.Render("Tab/↑/↓ fields · Enter next/confirm · Ctrl+S confirm · Esc cancel") + "\n")
 	}
 	lines := strings.Split(output.String(), "\n")
 	for index := range lines {
-		lines[index] = ui.Truncate(lines[index], width)
+		lines[index] = ui.TruncateStyled(lines[index], width)
 	}
 	return strings.Join(lines, "\n")
 }
@@ -1209,38 +1219,42 @@ func sourceKind(source workflows.SubmissionSource) string {
 func (model Model) notificationConfigView(width int) string {
 	transitions := []string{"Running", "Suspended", "Succeeded", "Failed", "Error", "Terminated"}
 	var output strings.Builder
-	fmt.Fprintf(&output, "argowt  notification preferences: %s\n\n", ui.Sanitize(model.notificationName))
-	output.WriteString("Choose transitions:\n")
+	fmt.Fprintf(&output, "%s  %s %s\n\n", theme.Title.Render("argowt"), theme.PanelTitle.Render("Notification preferences"), theme.Accent.Render(ui.Sanitize(model.notificationName)))
+	output.WriteString(theme.TableHeader.Render("Choose transitions") + "\n")
 	for index, transition := range transitions {
 		mark := " "
 		if model.notificationChoices[transition] {
 			mark = "x"
 		}
-		fmt.Fprintf(&output, "  %d [%s] %s\n", index+1, mark, transition)
+		line := fmt.Sprintf("  %d [%s] %s", index+1, mark, transition)
+		if model.notificationChoices[transition] {
+			line = theme.Success.Render(line)
+		}
+		output.WriteString(line + "\n")
 	}
 	desktop := "off"
 	if model.notificationDesktop {
 		desktop = "on (uses graceful no-op fallback when unavailable)"
 	}
 	fmt.Fprintf(&output, "\n  d desktop notifications: %s\n", desktop)
-	output.WriteString("\n1-6 toggle · d desktop · Enter save · Esc cancel\n")
+	output.WriteString("\n" + theme.Muted.Render("1-6 toggle · d desktop · Enter save · Esc cancel") + "\n")
 	return output.String()
 }
 
 func (model Model) detailView(width int) string {
 	var output strings.Builder
-	fmt.Fprintf(&output, "argowt  %s detail  context: %s\n", ui.Sanitize(model.resourceDescriptor.Title), ui.Sanitize(model.context))
+	fmt.Fprintf(&output, "%s  %s %s  %s: %s\n", theme.Title.Render("argowt"), theme.PanelTitle.Render(model.resourceDescriptor.Title+" detail"), theme.Accent.Render(ui.Sanitize(model.detailUID)), theme.Muted.Render("context"), theme.Info.Render(ui.Sanitize(model.context)))
 	mode := "metadata"
 	if model.detailYAML {
 		mode = "YAML"
 	}
-	fmt.Fprintf(&output, "view: %s  Tab/y toggle · j/k scroll · Esc back · q quit\n\n", mode)
+	fmt.Fprintf(&output, "%s: %s  %s\n\n", theme.Muted.Render("view"), theme.Accent.Render(mode), theme.Muted.Render("Tab/y toggle · j/k scroll · Esc back · q quit"))
 	if model.detailLoading {
-		output.WriteString("Loading resource details…\n")
+		output.WriteString(theme.Info.Render("◌ Loading resource details…") + "\n")
 		return output.String()
 	}
 	if model.detailError != nil {
-		fmt.Fprintf(&output, "! %s\n", ui.Sanitize(model.detailError.Error()))
+		fmt.Fprintf(&output, "%s\n", theme.Error.Render("! "+ui.Sanitize(model.detailError.Error())))
 		return output.String()
 	}
 	if model.detail == nil {
@@ -1256,7 +1270,11 @@ func (model Model) detailView(width int) string {
 	start := min(model.detailScroll, max(0, len(lines)-1))
 	end := min(len(lines), start+visible)
 	for _, line := range lines[start:end] {
-		output.WriteString(ui.Truncate(ui.Sanitize(line), width))
+		rendered := ui.Truncate(ui.Sanitize(line), width)
+		if !model.detailYAML && strings.HasSuffix(line, ":") {
+			rendered = theme.PanelTitle.Render(rendered)
+		}
+		output.WriteString(rendered)
 		output.WriteByte('\n')
 	}
 	return output.String()
@@ -1390,7 +1408,13 @@ func renderRow(output *strings.Builder, width int, selected bool, status, namesp
 		ui.Truncate(ui.Sanitize(name), 29),
 		formatAge(created),
 	)
-	output.WriteString(ui.Truncate(line, width))
+	line = ui.Truncate(line, width)
+	if selected {
+		line = theme.Row(line, true)
+	} else {
+		line = theme.Status(line, status)
+	}
+	output.WriteString(line)
 	output.WriteByte('\n')
 }
 
