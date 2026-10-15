@@ -25,6 +25,12 @@ var (
 	errWorkflowDeleted = fmt.Errorf("workflow deleted")
 )
 
+// Pseudo-phases for watches whose workflow is gone.
+const (
+	phaseDeleted   = "Deleted"
+	phaseRecreated = "Recreated"
+)
+
 type Event struct {
 	Context   string
 	Namespace string
@@ -118,17 +124,10 @@ func (manager *Manager) IsWatched(uid string) bool {
 
 func (manager *Manager) Toggle(summary workflows.Summary) (bool, error) {
 	manager.mu.Lock()
-	for index, record := range manager.state.Watches {
-		if record.Context == manager.context && record.UID == summary.UID {
-			manager.state.Watches = append(manager.state.Watches[:index], manager.state.Watches[index+1:]...)
-			if cancel := manager.running[record.UID]; cancel != nil {
-				cancel()
-				delete(manager.running, record.UID)
-			}
-			err := manager.saveLocked()
-			manager.mu.Unlock()
-			return false, err
-		}
+	if _, removed := manager.removeLocked(summary.UID); removed {
+		err := manager.saveLocked()
+		manager.mu.Unlock()
+		return false, err
 	}
 	record := config.WorkflowWatch{
 		Context:         manager.context,
@@ -195,6 +194,13 @@ func (manager *Manager) runRecord(ctx context.Context, record config.WorkflowWat
 	attempt := 0
 	for ctx.Err() == nil {
 		workflow, err := client.Get(ctx, record.Name, metav1.GetOptions{})
+
+		// Deleted while not watched (e.g. pruned by a cron history limit): drop the watch
+		// instead of retrying forever.
+		if apierrors.IsNotFound(err) {
+			manager.dropWatch(ctx, record, phaseDeleted, "workflow was deleted")
+			return
+		}
 		if err != nil {
 			manager.warn(fmt.Errorf("reconcile notification for %s/%s: %w", record.Namespace, record.Name, err))
 			if !wait(ctx, attempt) {
@@ -204,10 +210,7 @@ func (manager *Manager) runRecord(ctx context.Context, record config.WorkflowWat
 			continue
 		}
 		if string(workflow.UID) != record.UID {
-			manager.emit(Event{
-				Context: manager.context, Namespace: record.Namespace, Name: record.Name, UID: record.UID,
-				From: record.LastPhase, To: "Recreated", Message: "workflow was deleted and recreated; notification watch was not transferred", At: time.Now().UTC(),
-			}, false)
+			manager.dropWatch(ctx, record, phaseRecreated, "workflow was deleted and recreated; notification watch was not transferred")
 			return
 		}
 		currentPhase := workflowPhase(workflow)
@@ -231,7 +234,11 @@ func (manager *Manager) runRecord(ctx context.Context, record config.WorkflowWat
 		if err == nil {
 			err = manager.consume(ctx, stream, &record)
 		}
-		if ctx.Err() != nil || errors.Is(err, errWorkflowDeleted) {
+		if ctx.Err() != nil {
+			return
+		}
+		if errors.Is(err, errWorkflowDeleted) {
+			manager.dropWatch(ctx, record, phaseDeleted, "workflow was deleted")
 			return
 		}
 		manager.warn(fmt.Errorf("notification watch for %s/%s: %w", record.Namespace, record.Name, err))
@@ -263,11 +270,6 @@ func (manager *Manager) consume(ctx context.Context, stream watch.Interface, rec
 				return fmt.Errorf("workflow identity changed")
 			}
 			if watched.Type == watch.Deleted {
-				_, desktop, _ := manager.Settings(record.UID)
-				manager.emit(Event{
-					Context: manager.context, Namespace: record.Namespace, Name: record.Name, UID: record.UID,
-					From: record.LastPhase, To: "Deleted", Message: "workflow was deleted", At: time.Now().UTC(),
-				}, desktop)
 				return errWorkflowDeleted
 			}
 			phase := workflowPhase(workflow)
@@ -306,6 +308,46 @@ func (manager *Manager) updateRecord(updated config.WorkflowWatch) {
 			return
 		}
 	}
+}
+
+// dropWatch removes a watch whose workflow is gone and reports why.
+func (manager *Manager) dropWatch(ctx context.Context, record config.WorkflowWatch, to, message string) {
+	manager.mu.Lock()
+
+	// A cancelled context means the watch was toggled off, and maybe on again:
+	// the stored record may already belong to a newer goroutine.
+	if ctx.Err() != nil {
+		manager.mu.Unlock()
+		return
+	}
+
+	removed, _ := manager.removeLocked(record.UID)
+	if err := manager.saveLocked(); err != nil {
+		manager.warnLocked(err)
+	}
+	manager.mu.Unlock()
+
+	manager.emit(Event{
+		Context: manager.context, Namespace: record.Namespace, Name: record.Name, UID: record.UID,
+		From: record.LastPhase, To: to, Message: message, At: time.Now().UTC(),
+	}, removed.Desktop)
+}
+
+// removeLocked deletes a watch and stops its goroutine. The caller holds mu.
+func (manager *Manager) removeLocked(uid string) (config.WorkflowWatch, bool) {
+	for index, record := range manager.state.Watches {
+		if record.Context != manager.context || record.UID != uid {
+			continue
+		}
+
+		manager.state.Watches = append(manager.state.Watches[:index], manager.state.Watches[index+1:]...)
+		if cancel := manager.running[uid]; cancel != nil {
+			cancel()
+			delete(manager.running, uid)
+		}
+		return record, true
+	}
+	return config.WorkflowWatch{}, false
 }
 
 func (manager *Manager) saveLocked() error {

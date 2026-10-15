@@ -149,6 +149,42 @@ func TestRecreatedWorkflowDoesNotInheritWatch(t *testing.T) {
 	if manager.IsWatched("new-uid") {
 		t.Fatal("new workflow UID inherited the old watch")
 	}
+	waitUnwatched(t, manager, "old-uid")
+}
+
+func TestMissingWorkflowDropsWatch(t *testing.T) {
+	state := config.NewState()
+	state.Watches = []config.WorkflowWatch{{
+		Context: "development", Namespace: "argo", Name: "example", UID: "uid-1",
+		LastPhase: "Running", Transitions: []string{"Succeeded"},
+	}}
+	manager := NewManager(fakeSource{client: &fakeClient{}}, "development", "", state, NoopDesktop{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	manager.Start(ctx)
+	defer manager.Close()
+
+	event := receiveEvent(t, manager.Events())
+	if event.To != "Deleted" {
+		t.Fatalf("event = %+v", event)
+	}
+	waitUnwatched(t, manager, "uid-1")
+	select {
+	case err := <-manager.Warnings():
+		t.Fatalf("unexpected warning: %v", err)
+	default:
+	}
+}
+
+func waitUnwatched(t *testing.T, manager *Manager, uid string) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for manager.IsWatched(uid) {
+		if time.Now().After(deadline) {
+			t.Fatalf("watch %s was not dropped", uid)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func TestWorkflowPhaseRecognizesSuspendedAndTerminated(t *testing.T) {
