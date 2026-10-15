@@ -4,12 +4,116 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	applogs "argowt/internal/logs"
 	"argowt/internal/ui"
+	"argowt/internal/workflows"
 )
+
+// Node log panel in the workflow view.
+// Moving the cursor waits nodePreviewDwell before it streams, so fast scrolling opens no streams.
+const (
+	nodePreviewDwell      = 900 * time.Millisecond
+	nodePreviewTailLines  = 50
+	nodePreviewBufferSize = 64 * 1024
+)
+
+// toggleNodePanel switches the bottom panel between node details and live logs.
+func (model Model) toggleNodePanel() (tea.Model, tea.Cmd) {
+	model.executionLogPanel = !model.executionLogPanel
+	if !model.resetNodePreview() {
+		return model, nil
+	}
+	return model, model.startNodePreviewDiscovery(model.nodePreviewGeneration, model.executionSelectedID)
+}
+
+func (model *Model) scheduleNodePreview() tea.Cmd {
+	if !model.resetNodePreview() {
+		return nil
+	}
+	generation := model.nodePreviewGeneration
+	nodeID := model.executionSelectedID
+	return tea.Tick(nodePreviewDwell, func(time.Time) tea.Msg {
+		return nodePreviewDwellMessage{generation: generation, nodeID: nodeID}
+	})
+}
+
+// resetNodePreview stops the current stream and clears its state.
+// It returns true when the log panel is open on a node that has a pod.
+func (model *Model) resetNodePreview() bool {
+	if model.nodePreviewCancel != nil {
+		model.nodePreviewCancel()
+		model.nodePreviewCancel = nil
+	}
+	model.nodePreviewGeneration++
+	model.nodePreviewID = ""
+	model.nodePreviewPod = applogs.Pod{}
+	model.nodePreviewBuffer = nil
+	model.nodePreviewUpdates = nil
+	model.nodePreviewState = ""
+	model.nodePreviewError = nil
+	if !model.executionLogPanel || model.logService == nil || model.execution == nil {
+		return false
+	}
+
+	node, found := model.execution.Nodes[model.executionSelectedID]
+	if !found || !hasPod(node) {
+		return false
+	}
+	model.nodePreviewID = model.executionSelectedID
+	model.nodePreviewBuffer = applogs.NewBuffer(nodePreviewTailLines, nodePreviewBufferSize)
+	model.nodePreviewState = "waiting"
+	return true
+}
+
+func hasPod(node workflows.Node) bool {
+	return node.Type == "Pod" || node.Type == "Container"
+}
+
+func (model *Model) startNodePreviewDiscovery(generation uint64, nodeID string) tea.Cmd {
+	if model.nodePreviewCancel != nil {
+		model.nodePreviewCancel()
+	}
+	ctx, cancel := context.WithCancel(model.rootContext)
+	model.nodePreviewCancel = cancel
+	model.nodePreviewState = "discovering"
+	node := model.execution.Nodes[nodeID]
+	return func() tea.Msg {
+		pod, err := model.logService.Discover(ctx, model.execution.Namespace, model.execution.Name, node.ID, node.Name)
+		return nodePreviewDiscoveryMessage{generation: generation, nodeID: nodeID, pod: pod, err: err}
+	}
+}
+
+func (model *Model) startNodePreviewStream(generation uint64, nodeID string) tea.Cmd {
+	if len(model.nodePreviewPod.Containers) == 0 {
+		return nil
+	}
+	if model.nodePreviewCancel != nil {
+		model.nodePreviewCancel()
+	}
+	ctx, cancel := context.WithCancel(model.rootContext)
+	model.nodePreviewCancel = cancel
+	container := model.nodePreviewPod.Containers[0]
+	model.nodePreviewState = "connecting"
+	model.nodePreviewUpdates = model.logService.Stream(ctx, applogs.Request{
+		Namespace: model.nodePreviewPod.Namespace,
+		Pod:       model.nodePreviewPod.Name,
+		Container: container.Name,
+		Follow:    true,
+		TailLines: nodePreviewTailLines,
+	})
+	return waitForNodePreviewEvent(generation, nodeID, model.nodePreviewUpdates)
+}
+
+func waitForNodePreviewEvent(generation uint64, nodeID string, updates <-chan applogs.Event) tea.Cmd {
+	return func() tea.Msg {
+		event, open := <-updates
+		return nodePreviewEventMessage{generation: generation, nodeID: nodeID, event: event, updates: updates, open: open}
+	}
+}
 
 func (model Model) openSelectedNodeLogs() (tea.Model, tea.Cmd) {
 	if model.logService == nil || model.execution == nil {
@@ -18,6 +122,10 @@ func (model Model) openSelectedNodeLogs() (tea.Model, tea.Cmd) {
 	node, found := model.execution.Nodes[model.executionSelectedID]
 	if !found {
 		return model, nil
+	}
+	if model.nodePreviewCancel != nil {
+		model.nodePreviewCancel()
+		model.nodePreviewCancel = nil
 	}
 	if model.logCancel != nil {
 		model.logCancel()
@@ -141,6 +249,7 @@ func (model Model) updateLogKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		model.logVisible = false
 		model.logUpdates = nil
 		model.logBuffer = nil
+		return model, model.scheduleNodePreview()
 	case "j", "down":
 		model.logAutoScroll = false
 		model.logOffset = max(0, model.logOffset-1)
@@ -184,6 +293,10 @@ func (model Model) updateLogKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "s":
 		model.logSaving = true
 		model.logSavePath = ""
+	case ":":
+		model.palette = true
+		model.command = ""
+		model.paletteCursor = 0
 	}
 	return model, nil
 }
@@ -213,7 +326,7 @@ func (model Model) logView(width int) string {
 		theme.Muted.Render("follow"), effectiveFollow,
 		theme.Muted.Render("timestamps"), model.logTimestamps,
 		theme.Muted.Render("wrap"), model.logWrap)
-	output.WriteString(theme.Muted.Render("c/Tab container · p previous · f follow · t timestamps · w wrap · / search · s save · r reconnect · Esc back") + "\n")
+	output.WriteString(theme.Muted.Render("c/Tab container · p previous · f follow · t timestamps · w wrap · / search · s save · r reconnect · : commands · Esc back") + "\n")
 	if model.logError != nil {
 		output.WriteString(theme.Error.Render("! "+ui.Sanitize(model.logError.Error())) + "\n")
 	}
@@ -254,6 +367,32 @@ func (model Model) logView(width int) string {
 		output.WriteString(theme.Muted.Render("Waiting for log output…") + "\n")
 	}
 	return output.String()
+}
+
+// nodeLogPanel renders the last log lines of the node, or why there are none.
+func (model Model) nodeLogPanel(node workflows.Node, width, limit int) string {
+	var message string
+	switch {
+	case !hasPod(node):
+		return theme.Warning.Render(ui.Truncate(fmt.Sprintf("! %s is a %s node; it has no logs.", ui.Sanitize(node.DisplayName), ui.Sanitize(node.Type)), width)) + "\n"
+	case model.nodePreviewError != nil:
+		return theme.Error.Render(ui.Truncate("! logs unavailable: "+ui.Sanitize(model.nodePreviewError.Error()), width)) + "\n"
+	case model.nodePreviewBuffer != nil && model.nodePreviewBuffer.Len() > 0:
+		lines := model.nodePreviewBuffer.Lines()
+		lines = lines[max(0, len(lines)-limit):]
+		var output strings.Builder
+		for _, line := range lines {
+			output.WriteString(ui.Truncate(ui.Sanitize(line), width) + "\n")
+		}
+		return output.String()
+	case model.nodePreviewState == "ended":
+		message = "Log stream ended with no output."
+	case model.nodePreviewState == "waiting":
+		message = "Stay on this node to load its logs…"
+	default:
+		message = "Loading node logs…"
+	}
+	return theme.Muted.Render(message) + "\n"
 }
 
 func (model Model) visibleLogLines(width int) []string {

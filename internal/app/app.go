@@ -22,6 +22,9 @@ import (
 
 var theme = ui.DefaultTheme()
 
+// maxWarningScopes caps the scopes named in one grouped warning line.
+const maxWarningScopes = 3
+
 // Options contains process-level settings established by the CLI. It contains
 // no Kubernetes clients, credentials, or persisted resource data.
 type Options struct {
@@ -211,14 +214,16 @@ type Model struct {
 	notificationChoices  map[string]bool
 	notificationDesktop  bool
 
-	submissionService TemplateSubmissionService
-	submissionVisible bool
-	submissionStage   string
-	submissionForm    workflows.SubmissionForm
-	submissionValues  map[string]string
-	submissionFocus   int
-	submissionError   error
-	submissionResult  *workflows.SubmissionResult
+	submissionService        TemplateSubmissionService
+	submissionVisible        bool
+	submissionStage          string
+	submissionForm           workflows.SubmissionForm
+	submissionValues         map[string]string
+	submissionFocus          int
+	submissionError          error
+	submissionResult         *workflows.SubmissionResult
+	pendingWorkflowNamespace string
+	pendingWorkflowName      string
 
 	logService          LogService
 	logVisible          bool
@@ -243,6 +248,16 @@ type Model struct {
 	logSavePath         string
 	logNotice           string
 	logReconnectAttempt int
+
+	executionLogPanel     bool
+	nodePreviewGeneration uint64
+	nodePreviewCancel     context.CancelFunc
+	nodePreviewID         string
+	nodePreviewPod        applogs.Pod
+	nodePreviewBuffer     *applogs.Buffer
+	nodePreviewUpdates    <-chan applogs.Event
+	nodePreviewState      string
+	nodePreviewError      error
 
 	connectionState workflows.ConnectionState
 	items           []workflows.Summary
@@ -326,6 +341,26 @@ type logEventMessage struct {
 
 type logReconnectMessage struct {
 	generation uint64
+}
+
+type nodePreviewDwellMessage struct {
+	generation uint64
+	nodeID     string
+}
+
+type nodePreviewDiscoveryMessage struct {
+	generation uint64
+	nodeID     string
+	pod        applogs.Pod
+	err        error
+}
+
+type nodePreviewEventMessage struct {
+	generation uint64
+	nodeID     string
+	event      applogs.Event
+	updates    <-chan applogs.Event
+	open       bool
 }
 
 func NewModel(options ModelOptions) Model {
@@ -486,6 +521,16 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			model.partialErrors = message.snapshot.PartialErrors
 			model.fatalError = message.snapshot.Err
 			model.clampCursor()
+			if model.pendingWorkflowName != "" {
+				for index, workflow := range model.filteredItems() {
+					if workflow.Namespace == model.pendingWorkflowNamespace && workflow.Name == model.pendingWorkflowName {
+						model.cursor = index
+						model.pendingWorkflowName = ""
+						model.pendingWorkflowNamespace = ""
+						break
+					}
+				}
+			}
 		}
 		return model, waitForSnapshot(model.updates)
 	case resourceSnapshotMessage:
@@ -531,16 +576,21 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if !message.open {
 			return model, nil
 		}
+		var previewCommand tea.Cmd
 		if message.update.Generation == model.executionGeneration {
 			model.executionStale = message.update.Stale
 			model.executionError = message.update.Err
 			if !message.update.Stale && message.update.Err == nil {
+				selectedBefore := model.executionSelectedID
 				execution := message.update.Execution
 				model.execution = &execution
 				model.reconcileExecutionSelection()
+				if model.executionSelectedID != selectedBefore || model.nodePreviewID == "" {
+					previewCommand = model.scheduleNodePreview()
+				}
 			}
 		}
-		return model, waitForExecution(message.updates)
+		return model, tea.Batch(waitForExecution(message.updates), previewCommand)
 	case notificationMessage:
 		model.notifications = append(model.notifications, message.event)
 		if len(model.notifications) > 5 {
@@ -567,11 +617,20 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		model.submissionError = message.err
 		if message.err == nil {
 			result := message.result
-			model.submissionResult = &result
-			model.submissionStage = "complete"
-		} else {
-			model.submissionStage = "confirm"
+			model.clearSubmission()
+			model.pendingWorkflowNamespace = result.Namespace
+			model.pendingWorkflowName = result.Name
+			workflowDescriptor, _ := resources.Lookup("workflows")
+			switched, command := model.switchResource(workflowDescriptor)
+			model = switched.(Model)
+
+			// A template filter (e.g. name=train-hera) would hide the new workflow.
+			model.query = ""
+			model.updateFilter()
+			model.resourceNotice = "Submitted workflow " + result.Namespace + "/" + result.Name
+			return model, command
 		}
+		model.submissionStage = "confirm"
 		return model, nil
 	case logDiscoveryMessage:
 		if message.generation != model.logGeneration || !model.logVisible {
@@ -623,6 +682,43 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			return model, nil
 		}
 		return model.startLogStream(false)
+	case nodePreviewDwellMessage:
+		if message.generation != model.nodePreviewGeneration || message.nodeID != model.executionSelectedID || !model.executionVisible || model.logVisible {
+			return model, nil
+		}
+		return model, model.startNodePreviewDiscovery(message.generation, message.nodeID)
+	case nodePreviewDiscoveryMessage:
+		if message.generation != model.nodePreviewGeneration || message.nodeID != model.executionSelectedID || !model.executionVisible || model.logVisible {
+			return model, nil
+		}
+		model.nodePreviewError = message.err
+		if message.err != nil || len(message.pod.Containers) == 0 {
+			model.nodePreviewState = "unavailable"
+			return model, nil
+		}
+		model.nodePreviewPod = message.pod
+		return model, model.startNodePreviewStream(message.generation, message.nodeID)
+	case nodePreviewEventMessage:
+		if !message.open {
+			return model, nil
+		}
+		if message.generation != model.nodePreviewGeneration || message.nodeID != model.executionSelectedID || !model.executionVisible || model.logVisible {
+			return model, waitForNodePreviewEvent(message.generation, message.nodeID, message.updates)
+		}
+		if len(message.event.Lines) > 0 {
+			model.nodePreviewBuffer.Append(message.event.Lines...)
+			model.nodePreviewState = "live"
+		}
+		if message.event.Err != nil {
+			model.nodePreviewError = message.event.Err
+			model.nodePreviewState = "unavailable"
+			return model, nil
+		}
+		if message.event.Ended {
+			model.nodePreviewState = "ended"
+			return model, nil
+		}
+		return model, waitForNodePreviewEvent(message.generation, message.nodeID, message.updates)
 	case tea.WindowSizeMsg:
 		model.width = message.Width
 		model.height = message.Height
@@ -652,9 +748,9 @@ func (model Model) updateMouse(mouse tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if model.resourceNotice != "" {
 			noticeLines++
 		}
-		row := mouse.Y - (4 + noticeLines)
+		row := mouse.Y - (5 + noticeLines)
 		itemCount := model.itemCount()
-		visibleRows := model.height - (4 + noticeLines) - 3
+		visibleRows := model.height - (5 + noticeLines) - 3
 		if visibleRows < 1 || model.height == 0 {
 			visibleRows = itemCount
 		}
@@ -671,6 +767,9 @@ func (model Model) updateMouse(mouse tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (model Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if model.palette {
+		return model.updatePaletteKey(key)
+	}
 	if model.logVisible {
 		return model.updateLogKey(key)
 	}
@@ -685,9 +784,6 @@ func (model Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if model.detailVisible {
 		return model.updateDetailKey(key)
-	}
-	if model.palette {
-		return model.updatePaletteKey(key)
 	}
 	if model.filtering {
 		switch key.String() {
@@ -735,6 +831,10 @@ func (model Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		model.palette = true
 		model.command = ""
 		model.paletteCursor = 0
+	case "tab":
+		return model.cycleResource(1)
+	case "shift+tab":
+		return model.cycleResource(-1)
 	case "esc":
 		model.query = ""
 		model.updateFilter()
@@ -776,6 +876,10 @@ func (model Model) updateDetailKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		model.detailScroll = max(0, model.detailScroll-1)
 	case "g", "home":
 		model.detailScroll = 0
+	case ":":
+		model.palette = true
+		model.command = ""
+		model.paletteCursor = 0
 	}
 	return model, nil
 }
@@ -1041,7 +1145,7 @@ func copyStringMap(source map[string]string) map[string]string {
 }
 
 func (model Model) updatePaletteKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
-	commands := resources.Commands(model.availableResources, model.command)
+	commands := model.paletteCommands()
 	switch key.String() {
 	case "esc":
 		model.palette = false
@@ -1053,7 +1157,7 @@ func (model Model) updatePaletteKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		index := min(model.paletteCursor, len(commands)-1)
 		model.palette = false
 		model.command = ""
-		return model.switchResource(commands[index])
+		return model.executePaletteCommand(commands[index])
 	case "up", "ctrl+k":
 		model.paletteCursor = max(0, model.paletteCursor-1)
 	case "down", "ctrl+j":
@@ -1191,7 +1295,7 @@ func (model Model) View() string {
 		width = 100
 	}
 	if model.logVisible {
-		return model.logView(width)
+		return model.withPalette(model.logView(width))
 	}
 	if model.submissionVisible {
 		return model.submissionView(width)
@@ -1200,10 +1304,10 @@ func (model Model) View() string {
 		return model.notificationConfigView(width)
 	}
 	if model.executionVisible {
-		return model.executionView(width)
+		return model.withPalette(model.executionView(width))
 	}
 	if model.detailVisible {
-		return model.detailView(width)
+		return model.withPalette(model.detailView(width))
 	}
 	var output strings.Builder
 	fmt.Fprintf(&output, "%s  %s: %s  %s: %s  %s: %s  %s: %s\n",
@@ -1212,6 +1316,7 @@ func (model Model) View() string {
 		theme.Muted.Render("context"), theme.Info.Render(ui.Sanitize(model.context)),
 		theme.Muted.Render("namespaces"), theme.Info.Render(ui.Sanitize(model.namespace)),
 		theme.Muted.Render("instance"), theme.Info.Render(displayInstance(model.instanceID)))
+	output.WriteString(model.resourceTabs() + "  " + theme.Muted.Render("Tab/Shift+Tab switch") + "\n")
 	fmt.Fprintf(&output, "%s: %s", theme.Muted.Render("status"), theme.Status(model.currentState(), model.currentState()))
 	if model.query != "" || model.filtering {
 		fmt.Fprintf(&output, "  filter: /%s", ui.Sanitize(model.query))
@@ -1233,15 +1338,8 @@ func (model Model) View() string {
 	if currentError := model.currentError(); currentError != nil {
 		fmt.Fprintf(&output, "\n%s\n", theme.Error.Render("! "+ui.Sanitize(currentError.Error())))
 	}
-	if errorsByScope := model.currentErrors(); len(errorsByScope) > 0 {
-		keys := make([]string, 0, len(errorsByScope))
-		for key := range errorsByScope {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			fmt.Fprintf(&output, "%s\n", theme.Warning.Render("! "+ui.Sanitize(key)+": "+ui.Sanitize(errorsByScope[key])))
-		}
+	for _, line := range scopeWarnings(model.currentErrors()) {
+		fmt.Fprintf(&output, "%s\n", theme.Warning.Render(ui.Truncate(ui.Sanitize(line), width)))
 	}
 
 	output.WriteString("\n" + theme.TableHeader.Render("  STATUS        NAMESPACE           NAME                          AGE") + "\n")
@@ -1252,29 +1350,16 @@ func (model Model) View() string {
 	}
 
 	if model.palette {
-		output.WriteString("\n" + theme.PanelTitle.Render("Command palette") + "  " + theme.ActiveInput.Render(":"+ui.Sanitize(model.command)) + "\n")
-		commands := resources.Commands(model.availableResources, model.command)
-		for index, descriptor := range commands {
-			cursor := " "
-			if index == model.paletteCursor {
-				cursor = ">"
-			}
-			line := fmt.Sprintf("%s :%-9s %s", cursor, descriptor.ShortName, descriptor.Title)
-			output.WriteString(theme.Row(line, index == model.paletteCursor) + "\n")
-		}
-		if len(commands) == 0 {
-			output.WriteString("  No matching resource command.\n")
-		}
-		output.WriteString(theme.Muted.Render("Enter switch · Esc close") + "\n")
+		output.WriteString(model.paletteView())
 	} else if model.showHelp {
 		output.WriteString("\n" + theme.PanelTitle.Render("Keyboard") + "\n")
-		output.WriteString(theme.Muted.Render("j/k or arrows · g/G first/last · Enter open · s submit template · n toggle notify · N configure · : resources · / filter · Esc clear · q quit · ? hide help") + "\n")
+		output.WriteString(theme.Muted.Render("j/k or arrows · g/G first/last · Tab resources · Enter open · s submit template · n toggle notify · N configure · : commands · / filter · Esc clear · q quit · ? hide help") + "\n")
 		output.WriteString(theme.Muted.Render("Filters: fuzzy text · status=Running · namespace!=argo · age>10m · label:team=payments") + "\n")
 	} else if model.filtering {
 		output.WriteString("\n" + theme.ActiveInput.Render("Filter: /"+ui.Sanitize(model.query)) + "\n")
 		output.WriteString(theme.Muted.Render("Type to search · Enter apply · Esc cancel") + "\n")
 	} else {
-		output.WriteString("\n" + theme.Muted.Render("j/k navigate · Enter open · s submit · n notify · N configure · : resources · / filter · ? help · q quit") + "\n")
+		output.WriteString("\n" + theme.Muted.Render("j/k navigate · Tab resources · Enter open · s submit · n notify · N configure · : commands · / filter · ? help · q quit") + "\n")
 	}
 	return output.String()
 }
@@ -1383,7 +1468,7 @@ func (model Model) detailView(width int) string {
 	if model.detailYAML {
 		mode = "YAML"
 	}
-	fmt.Fprintf(&output, "%s: %s  %s\n\n", theme.Muted.Render("view"), theme.Accent.Render(mode), theme.Muted.Render("Tab/y toggle · j/k scroll · Esc back · q quit"))
+	fmt.Fprintf(&output, "%s: %s  %s\n\n", theme.Muted.Render("view"), theme.Accent.Render(mode), theme.Muted.Render("Tab/y toggle · j/k scroll · : commands · Esc back · q quit"))
 	if model.detailLoading {
 		output.WriteString(theme.Info.Render("◌ Loading resource details…") + "\n")
 		return output.String()
@@ -1518,9 +1603,10 @@ func (model Model) renderResources(output *strings.Builder, width int) {
 
 func (model Model) visibleRange(length, usedLines int) (int, int) {
 	visibleRows := model.height - usedLines - 3
-	if visibleRows < 1 || model.height == 0 {
+	if model.height == 0 {
 		visibleRows = length
 	}
+	visibleRows = max(1, visibleRows)
 	start := 0
 	if model.cursor >= visibleRows {
 		start = model.cursor - visibleRows + 1
@@ -1551,6 +1637,28 @@ func renderRow(output *strings.Builder, width int, selected bool, status, namesp
 	}
 	output.WriteString(line)
 	output.WriteByte('\n')
+}
+
+// scopeWarnings groups scopes by error, one line per error.
+// e.g. "! forbidden: kyverno, mlflow, ray (+24 more)"
+func scopeWarnings(errorsByScope map[string]string) []string {
+	scopesByError := make(map[string][]string)
+	for scope, message := range errorsByScope {
+		scopesByError[message] = append(scopesByError[message], scope)
+	}
+
+	lines := make([]string, 0, len(scopesByError))
+	for message, scopes := range scopesByError {
+		sort.Strings(scopes)
+		shown := scopes[:min(len(scopes), maxWarningScopes)]
+		line := "! " + message + ": " + strings.Join(shown, ", ")
+		if hidden := len(scopes) - len(shown); hidden > 0 {
+			line += fmt.Sprintf(" (+%d more)", hidden)
+		}
+		lines = append(lines, line)
+	}
+	sort.Strings(lines)
+	return lines
 }
 
 func (model Model) currentState() string {

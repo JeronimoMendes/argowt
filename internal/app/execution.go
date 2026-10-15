@@ -47,6 +47,7 @@ func (model Model) openWorkflowExecution() (tea.Model, tea.Cmd) {
 }
 
 func (model Model) updateExecutionKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	selectedBefore := model.executionSelectedID
 	switch key.String() {
 	case "q", "ctrl+c":
 		if model.cancel != nil {
@@ -57,21 +58,16 @@ func (model Model) updateExecutionKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if model.executionCancel != nil {
 			model.executionCancel()
 		}
+		if model.nodePreviewCancel != nil {
+			model.nodePreviewCancel()
+		}
 		model.executionVisible = false
 		model.execution = nil
 		model.executionError = nil
 		model.executionSelectedID = ""
 		return model, nil
 	case "tab":
-		switch model.executionMode {
-		case "tree":
-			model.executionMode = "dag"
-		case "dag":
-			model.executionMode = "table"
-		default:
-			model.executionMode = "tree"
-		}
-		model.reconcileExecutionSelection()
+		return model.toggleNodePanel()
 	case "t":
 		model.executionMode = "tree"
 		model.reconcileExecutionSelection()
@@ -97,6 +93,13 @@ func (model Model) updateExecutionKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		model.openNotificationConfig()
 	case "enter", "o":
 		return model.openSelectedNodeLogs()
+	case ":":
+		model.palette = true
+		model.command = ""
+		model.paletteCursor = 0
+	}
+	if model.executionSelectedID != selectedBefore {
+		return model, model.scheduleNodePreview()
 	}
 	return model, nil
 }
@@ -177,7 +180,7 @@ func (model Model) executionView(width int) string {
 		theme.Title.Render("argowt"), theme.Muted.Render("workflow"), theme.Accent.Render(ui.Sanitize(name)),
 		theme.Muted.Render("mode"), theme.Info.Render(model.executionMode),
 		theme.Muted.Render("phase"), theme.Status(ui.Sanitize(phase), phase), theme.Warning.Render(watchIndicator))
-	output.WriteString(theme.Muted.Render("t tree · d DAG · l table · Tab next view · j/k navigate · Enter/o live logs · n toggle notify · N configure · Esc back · q quit") + "\n")
+	output.WriteString(theme.Muted.Render("t tree · d DAG · l table · Tab details/logs · j/k navigate · Enter/o live logs · n toggle notify · N configure · : commands · Esc back · q quit") + "\n")
 	if model.executionStale {
 		output.WriteString(theme.Warning.Render("! execution data is stale; reconnecting") + "\n")
 	}
@@ -219,25 +222,38 @@ func (model Model) executionView(width int) string {
 		output.WriteByte('\n')
 	}
 
-	if node, found := model.execution.Nodes[model.executionSelectedID]; found {
-		output.WriteString("\n" + theme.PanelTitle.Render("── Node details ──") + "\n")
-		detailLines := nodeDetailLines(node)
-		remaining := model.height - strings.Count(output.String(), "\n") - 1
-		if remaining < 1 || model.height == 0 {
-			remaining = len(detailLines)
+	node, found := model.execution.Nodes[model.executionSelectedID]
+	if !found {
+		return output.String()
+	}
+
+	// The bottom panel shows the node details or its live logs. Tab switches.
+	title := "── Node details · Tab logs ──"
+	if model.executionLogPanel {
+		title = "── Live logs · Tab details · Enter/o full view ──"
+	}
+	output.WriteString("\n" + theme.PanelTitle.Render(title) + "\n")
+	remaining := model.height - strings.Count(output.String(), "\n") - 1
+	if remaining < 1 || model.height == 0 {
+		remaining = nodePreviewTailLines
+	}
+	if model.executionLogPanel {
+		output.WriteString(model.nodeLogPanel(node, width, remaining))
+		return output.String()
+	}
+
+	detailLines := nodeDetailLines(node)
+	for index, line := range detailLines[:min(len(detailLines), remaining)] {
+		rendered := ui.Truncate(ui.Sanitize(line), width)
+		if index == 0 {
+			rendered = theme.Status(rendered, node.Phase)
+		} else if strings.HasPrefix(line, "message:") || strings.HasPrefix(line, "result:") {
+			rendered = theme.Warning.Render(rendered)
+		} else {
+			rendered = theme.Muted.Render(rendered)
 		}
-		for index, line := range detailLines[:min(len(detailLines), remaining)] {
-			rendered := ui.Truncate(ui.Sanitize(line), width)
-			if index == 0 {
-				rendered = theme.Status(rendered, node.Phase)
-			} else if strings.HasPrefix(line, "message:") || strings.HasPrefix(line, "result:") {
-				rendered = theme.Warning.Render(rendered)
-			} else {
-				rendered = theme.Muted.Render(rendered)
-			}
-			output.WriteString(rendered)
-			output.WriteByte('\n')
-		}
+		output.WriteString(rendered)
+		output.WriteByte('\n')
 	}
 	return output.String()
 }

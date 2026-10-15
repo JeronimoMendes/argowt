@@ -231,6 +231,18 @@ func TestCommandPaletteSwitchesResource(t *testing.T) {
 	if request.Descriptor.Kind != resources.WorkflowTemplates || request.CurrentNamespace != "argo" || request.InstanceID != "controller-a" {
 		t.Fatalf("unexpected request: %+v", request)
 	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(Model)
+	<-repository.requests
+	if model.resourceDescriptor.Kind != resources.ClusterWorkflowTemplates {
+		t.Fatalf("Tab resource = %s", model.resourceDescriptor.Kind)
+	}
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyShiftTab})
+	model = updated.(Model)
+	if model.resourceDescriptor.Kind != resources.WorkflowTemplates {
+		t.Fatalf("Shift+Tab resource = %s", model.resourceDescriptor.Kind)
+	}
 }
 
 func TestWorkflowNotificationToggleAndConfiguration(t *testing.T) {
@@ -307,7 +319,7 @@ func TestEnterOpensLiveWorkflowExecutionAndPreservesSelection(t *testing.T) {
 	if model.executionSelectedID != "child" {
 		t.Fatalf("selected node = %q", model.executionSelectedID)
 	}
-	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 	model = updated.(Model)
 	if model.executionMode != "dag" || model.executionSelectedID != "child" {
 		t.Fatalf("selection was not preserved across mode switch: mode=%s selected=%s", model.executionMode, model.executionSelectedID)
@@ -365,6 +377,32 @@ func TestOpenLiveNodeLogsAndSwitchOptions(t *testing.T) {
 	if !request.Previous || request.Follow {
 		t.Fatalf("previous request = %+v", request)
 	}
+
+	// Back in the workflow view, Tab switches the node panel to live logs.
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = updated.(Model)
+	updated, discover = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(Model)
+	updated, stream = model.Update(discover())
+	model = updated.(Model)
+	<-logService.requests
+	logService.events <- applogs.Event{Lines: []string{"preview line"}}
+	updated, _ = model.Update(stream())
+	model = updated.(Model)
+	if view := model.View(); !strings.Contains(view, "Live logs") || !strings.Contains(view, "preview line") {
+		t.Fatalf("node preview not rendered: %q", view)
+	}
+	model.execution.Nodes["node-1"] = workflows.Node{ID: "node-1", DisplayName: "steps", Type: "Steps", Phase: "Running"}
+	if view := model.View(); !strings.Contains(view, "steps is a Steps node; it has no logs") {
+		t.Fatalf("no-logs warning not rendered: %q", view)
+	}
+
+	// The palette opens over the workflow view with its commands.
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{':'}})
+	model = updated.(Model)
+	if view := model.View(); !strings.Contains(view, "Command palette") || !strings.Contains(view, "Open selected node logs") {
+		t.Fatalf("palette not rendered in workflow view: %q", view)
+	}
 }
 
 func TestSubmitWorkflowFromTemplateFormAndConfirmation(t *testing.T) {
@@ -376,6 +414,8 @@ func TestSubmitWorkflowFromTemplateFormAndConfirmation(t *testing.T) {
 	descriptor, _ := resources.Lookup("wft")
 	model.resourceDescriptor = descriptor
 	model.resourceItems = []resources.Summary{{Kind: resources.WorkflowTemplates, Namespace: "argo", Name: "payments"}}
+	model.query = "name=payments"
+	model.updateFilter()
 
 	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
 	model = updated.(Model)
@@ -402,8 +442,20 @@ func TestSubmitWorkflowFromTemplateFormAndConfirmation(t *testing.T) {
 	}
 	updated, _ = model.Update(command())
 	model = updated.(Model)
-	if model.submissionStage != "complete" || service.request.Parameters["message"] != "hello" {
-		t.Fatalf("submission = stage %s request %+v", model.submissionStage, service.request)
+	if model.submissionVisible || model.resourceDescriptor.Kind != resources.Workflows || service.request.Parameters["message"] != "hello" {
+		t.Fatalf("submission did not jump to workflows: visible=%t resource=%s request=%+v", model.submissionVisible, model.resourceDescriptor.Kind, service.request)
+	}
+	if model.pendingWorkflowName != "payments-abc" || !strings.Contains(model.resourceNotice, "payments-abc") {
+		t.Fatalf("submitted workflow focus/notice = %q, %q", model.pendingWorkflowName, model.resourceNotice)
+	}
+
+	updated, _ = model.Update(snapshotMessage{open: true, snapshot: workflows.Snapshot{
+		Generation: 1, State: workflows.StateFresh,
+		Workflows: []workflows.Summary{{Namespace: "argo", Name: "other", Phase: "Running"}, {Namespace: "argo", Name: "payments-abc", Phase: "Pending"}},
+	}})
+	model = updated.(Model)
+	if items := model.filteredItems(); model.cursor >= len(items) || items[model.cursor].Name != "payments-abc" {
+		t.Fatalf("submitted workflow not selected; template filter %q still active?", model.query)
 	}
 }
 
