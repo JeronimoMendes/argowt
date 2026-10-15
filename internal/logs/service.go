@@ -18,8 +18,9 @@ import (
 )
 
 const (
-	WorkflowLabel = "workflows.argoproj.io/workflow"
-	NodeIDLabel   = "workflows.argoproj.io/node-id"
+	WorkflowLabel      = "workflows.argoproj.io/workflow"
+	NodeIDAnnotation   = "workflows.argoproj.io/node-id"
+	NodeNameAnnotation = "workflows.argoproj.io/node-name"
 )
 
 type Container struct {
@@ -71,7 +72,10 @@ func (service *Service) Discover(ctx context.Context, namespace, workflowName, n
 	}
 	for index := range pods.Items {
 		pod := &pods.Items[index]
-		if pod.Labels[NodeIDLabel] == nodeID || pod.Name == nodeName || pod.Name == nodeID {
+		annotations := pod.GetAnnotations()
+		annotatedNodeID := annotations[NodeIDAnnotation]
+		annotatedNodeName := annotations[NodeNameAnnotation]
+		if annotatedNodeID == nodeID || annotatedNodeName == nodeName || (annotatedNodeID == "" && pod.Name == nodeID) || pod.Name == nodeName {
 			return normalizePod(pod), nil
 		}
 	}

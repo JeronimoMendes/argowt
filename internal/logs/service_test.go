@@ -17,7 +17,9 @@ import (
 func TestDiscoverWorkflowPodAndContainers(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Namespace: "argo", Name: "example-task", Labels: map[string]string{WorkflowLabel: "example", NodeIDLabel: "node-1"},
+			Namespace: "argo", Name: "example-task",
+			Labels:      map[string]string{WorkflowLabel: "example"},
+			Annotations: map[string]string{NodeIDAnnotation: "node-1", NodeNameAnnotation: "example.task"},
 		},
 		Spec: corev1.PodSpec{
 			InitContainers: []corev1.Container{{Name: "init"}},
@@ -38,6 +40,20 @@ func TestDiscoverWorkflowPodAndContainers(t *testing.T) {
 	}
 	if got.Containers[0].Name != "main" || !got.Containers[0].HasPrevious || got.Containers[1].Name != "wait" {
 		t.Fatalf("containers = %+v", got.Containers)
+	}
+}
+
+func TestDiscoverSupportsHistoricalPodNameNodeID(t *testing.T) {
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "argo", Name: "historical-node-id", Labels: map[string]string{WorkflowLabel: "example"},
+		},
+		Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main"}}},
+	}
+	service := NewService(fake.NewSimpleClientset(pod))
+	got, err := service.Discover(context.Background(), "argo", "example", "historical-node-id", "example.task")
+	if err != nil || got.Name != "historical-node-id" {
+		t.Fatalf("Discover() = %+v, %v", got, err)
 	}
 }
 
