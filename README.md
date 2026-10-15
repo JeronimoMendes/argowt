@@ -14,6 +14,7 @@
 - Keyboard and mouse navigation with fuzzy and structured filtering.
 - Resource command palette for Workflows, WorkflowTemplates, ClusterWorkflowTemplates, CronWorkflows, EventSources, Sensors, and EventBuses.
 - Dynamic Argo Events discovery: missing optional CRDs are hidden and forbidden resource scopes remain isolated.
+- Read-only metadata, labels, annotations, owners, conditions, and YAML detail views with UID identity checks.
 - Bounded reconnect backoff and resource-version recovery.
 - Cluster-free unit tests using narrow fake clients.
 

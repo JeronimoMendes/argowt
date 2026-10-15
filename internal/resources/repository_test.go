@@ -116,6 +116,40 @@ func TestMissingOptionalResourceIsScoped(t *testing.T) {
 	}
 }
 
+func TestGetReturnsMetadataConditionsAndYAMLWithIdentityCheck(t *testing.T) {
+	descriptor, _ := Lookup("sensor")
+	object := resourceObject(descriptor, "argo", "listener")
+	object.SetUID("uid-1")
+	object.SetResourceVersion("9")
+	object.SetLabels(map[string]string{"team": "events"})
+	object.SetAnnotations(map[string]string{"note": "diagnostic"})
+	object.SetOwnerReferences([]metav1.OwnerReference{{Kind: "EventBus", Name: "default", UID: "owner-1"}})
+	if err := unstructured.SetNestedSlice(object.Object, []any{
+		map[string]any{"type": "Deployed", "status": "True", "reason": "Healthy", "message": "sensor is ready"},
+	}, "status", "conditions"); err != nil {
+		t.Fatal(err)
+	}
+	client := dynamicfake.NewSimpleDynamicClientWithCustomListKinds(
+		runtime.NewScheme(),
+		map[schema.GroupVersionResource]string{descriptor.GVR: "SensorList"},
+		object,
+	)
+	repository := NewRepository(client, nil, nil)
+	detail, err := repository.Get(context.Background(), descriptor, "argo", "listener", "uid-1")
+	if err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
+	if detail.Labels["team"] != "events" || len(detail.Conditions) != 1 || detail.Conditions[0].Reason != "Healthy" {
+		t.Fatalf("unexpected detail: %+v", detail)
+	}
+	if detail.YAML == "" {
+		t.Fatal("YAML should not be empty")
+	}
+	if _, err := repository.Get(context.Background(), descriptor, "argo", "listener", "different-uid"); err == nil {
+		t.Fatal("Get() should reject a changed UID")
+	}
+}
+
 func TestNormalizeConditionsAndCronSuspension(t *testing.T) {
 	eventDescriptor, _ := Lookup("sensor")
 	event := resourceObject(eventDescriptor, "argo", "listener")

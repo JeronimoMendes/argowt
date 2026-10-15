@@ -105,6 +105,21 @@ func (repository *fakeResourceRepository) Start(_ context.Context, request resou
 	return make(chan resources.Snapshot)
 }
 
+func (repository *fakeResourceRepository) Get(_ context.Context, descriptor resources.Descriptor, namespace, name, uid string) (resources.Detail, error) {
+	return resources.Detail{
+		Summary: resources.Summary{
+			Kind:      descriptor.Kind,
+			Namespace: namespace,
+			Name:      name,
+			UID:       uid,
+			Status:    "Ready",
+		},
+		Labels:     map[string]string{"team": "platform"},
+		Conditions: []resources.Condition{{Type: "Ready", Status: "True"}},
+		YAML:       "apiVersion: argoproj.io/v1alpha1\nkind: Workflow\n",
+	}, nil
+}
+
 func TestCommandPaletteSwitchesResource(t *testing.T) {
 	repository := &fakeResourceRepository{requests: make(chan resources.Request, 1)}
 	model := NewModel(ModelOptions{
@@ -129,6 +144,31 @@ func TestCommandPaletteSwitchesResource(t *testing.T) {
 	request := <-repository.requests
 	if request.Descriptor.Kind != resources.WorkflowTemplates || request.CurrentNamespace != "argo" || request.InstanceID != "controller-a" {
 		t.Fatalf("unexpected request: %+v", request)
+	}
+}
+
+func TestEnterOpensMetadataAndYAMLDetail(t *testing.T) {
+	repository := &fakeResourceRepository{requests: make(chan resources.Request, 1)}
+	model := NewModel(ModelOptions{Generation: 1, RootContext: context.Background(), ResourceRepository: repository})
+	model.connectionState = workflows.StateFresh
+	model.items = []workflows.Summary{{Namespace: "argo", Name: "example", UID: "uid-1", Phase: "Running"}}
+
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if !model.detailVisible || !model.detailLoading || command == nil {
+		t.Fatalf("detail did not start loading: %+v", model)
+	}
+	updated, _ = model.Update(command())
+	model = updated.(Model)
+	metadata := model.View()
+	if !strings.Contains(metadata, "team=platform") || !strings.Contains(metadata, "Ready=True") {
+		t.Fatalf("metadata view = %q", metadata)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyTab})
+	model = updated.(Model)
+	if yamlView := model.View(); !strings.Contains(yamlView, "apiVersion: argoproj.io/v1alpha1") {
+		t.Fatalf("YAML view = %q", yamlView)
 	}
 }
 

@@ -95,6 +95,7 @@ func scopeLabel(options Options, defaultNamespace string) string {
 type ResourceRepository interface {
 	Discover(context.Context) (map[resources.Kind]bool, error)
 	Start(context.Context, resources.Request) <-chan resources.Snapshot
+	Get(context.Context, resources.Descriptor, string, string, string) (resources.Detail, error)
 }
 
 type ModelOptions struct {
@@ -134,6 +135,13 @@ type Model struct {
 	resourceError      error
 	availableResources map[resources.Kind]bool
 	resourceNotice     string
+	detail             *resources.Detail
+	detailError        error
+	detailLoading      bool
+	detailVisible      bool
+	detailYAML         bool
+	detailScroll       int
+	detailUID          string
 
 	connectionState workflows.ConnectionState
 	items           []workflows.Summary
@@ -166,6 +174,14 @@ type resourceSnapshotMessage struct {
 type discoveryMessage struct {
 	available map[resources.Kind]bool
 	err       error
+}
+
+type detailMessage struct {
+	generation uint64
+	descriptor resources.Descriptor
+	uid        string
+	detail     resources.Detail
+	err        error
 }
 
 func NewModel(options ModelOptions) Model {
@@ -226,6 +242,13 @@ func discoverResources(ctx context.Context, repository ResourceRepository) tea.C
 	}
 }
 
+func loadDetail(ctx context.Context, repository ResourceRepository, generation uint64, descriptor resources.Descriptor, namespace, name, uid string) tea.Cmd {
+	return func() tea.Msg {
+		detail, err := repository.Get(ctx, descriptor, namespace, name, uid)
+		return detailMessage{generation: generation, descriptor: descriptor, uid: uid, detail: detail, err: err}
+	}
+}
+
 func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
 	case snapshotMessage:
@@ -268,6 +291,15 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 				model.availableResources[kind] = available
 			}
 			model.availableResources[resources.Workflows] = true
+		}
+		return model, nil
+	case detailMessage:
+		if message.generation == model.currentResourceGeneration() && message.descriptor.Kind == model.resourceDescriptor.Kind && message.uid == model.detailUID {
+			model.detailLoading = false
+			model.detailError = message.err
+			if message.err == nil {
+				model.detail = &message.detail
+			}
 		}
 		return model, nil
 	case tea.WindowSizeMsg:
@@ -318,6 +350,9 @@ func (model Model) updateMouse(mouse tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (model Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if model.detailVisible {
+		return model.updateDetailKey(key)
+	}
 	if model.palette {
 		return model.updatePaletteKey(key)
 	}
@@ -373,8 +408,74 @@ func (model Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		model.cursor = 0
 	case "?":
 		model.showHelp = !model.showHelp
+	case "enter":
+		return model.openSelectedDetail()
 	}
 	return model, nil
+}
+
+func (model Model) updateDetailKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch key.String() {
+	case "q", "ctrl+c":
+		if model.cancel != nil {
+			model.cancel()
+		}
+		return model, tea.Quit
+	case "esc", "backspace":
+		model.detailVisible = false
+		model.detail = nil
+		model.detailError = nil
+		model.detailLoading = false
+		model.detailScroll = 0
+		model.detailUID = ""
+	case "tab", "y":
+		model.detailYAML = !model.detailYAML
+		model.detailScroll = 0
+	case "j", "down":
+		model.detailScroll++
+	case "k", "up":
+		model.detailScroll = max(0, model.detailScroll-1)
+	case "g", "home":
+		model.detailScroll = 0
+	}
+	return model, nil
+}
+
+func (model Model) openSelectedDetail() (tea.Model, tea.Cmd) {
+	if model.resourceRepository == nil || model.itemCount() == 0 {
+		return model, nil
+	}
+	var namespace, name, uid string
+	if model.resourceDescriptor.Kind == resources.Workflows {
+		items := model.filteredItems()
+		if model.cursor >= len(items) {
+			return model, nil
+		}
+		item := items[model.cursor]
+		namespace, name, uid = item.Namespace, item.Name, item.UID
+	} else {
+		items := model.filteredResourceItems()
+		if model.cursor >= len(items) {
+			return model, nil
+		}
+		item := items[model.cursor]
+		namespace, name, uid = item.Namespace, item.Name, item.UID
+	}
+	model.detailVisible = true
+	model.detailLoading = true
+	model.detailError = nil
+	model.detail = nil
+	model.detailYAML = false
+	model.detailScroll = 0
+	model.detailUID = uid
+	return model, loadDetail(model.rootContext, model.resourceRepository, model.currentResourceGeneration(), model.resourceDescriptor, namespace, name, uid)
+}
+
+func (model Model) currentResourceGeneration() uint64 {
+	if model.resourceDescriptor.Kind == resources.Workflows {
+		return model.generation
+	}
+	return model.resourceGeneration
 }
 
 func (model Model) updatePaletteKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -420,6 +521,9 @@ func (model Model) switchResource(descriptor resources.Descriptor) (tea.Model, t
 	model.resourceError = nil
 	model.resourceErrors = nil
 	model.resourceItems = nil
+	model.detailVisible = false
+	model.detail = nil
+	model.detailUID = ""
 	model.cursor = 0
 	if descriptor.Kind == resources.Workflows || model.resourceRepository == nil {
 		return model, nil
@@ -524,6 +628,9 @@ func (model Model) View() string {
 	if width <= 0 {
 		width = 100
 	}
+	if model.detailVisible {
+		return model.detailView(width)
+	}
 	var output strings.Builder
 	fmt.Fprintf(&output, "argowt  view: %s  context: %s  namespaces: %s  instance: %s\n",
 		ui.Sanitize(model.resourceDescriptor.Title), ui.Sanitize(model.context), ui.Sanitize(model.namespace), displayInstance(model.instanceID))
@@ -582,6 +689,114 @@ func (model Model) View() string {
 		output.WriteString("\nj/k navigate · : resources · / filter · ? help · q quit\n")
 	}
 	return output.String()
+}
+
+func (model Model) detailView(width int) string {
+	var output strings.Builder
+	fmt.Fprintf(&output, "argowt  %s detail  context: %s\n", ui.Sanitize(model.resourceDescriptor.Title), ui.Sanitize(model.context))
+	mode := "metadata"
+	if model.detailYAML {
+		mode = "YAML"
+	}
+	fmt.Fprintf(&output, "view: %s  Tab/y toggle · j/k scroll · Esc back · q quit\n\n", mode)
+	if model.detailLoading {
+		output.WriteString("Loading resource details…\n")
+		return output.String()
+	}
+	if model.detailError != nil {
+		fmt.Fprintf(&output, "! %s\n", ui.Sanitize(model.detailError.Error()))
+		return output.String()
+	}
+	if model.detail == nil {
+		output.WriteString("No detail is available.\n")
+		return output.String()
+	}
+
+	lines := model.detailLines()
+	visible := model.height - 4
+	if visible < 1 || model.height == 0 {
+		visible = len(lines)
+	}
+	start := min(model.detailScroll, max(0, len(lines)-1))
+	end := min(len(lines), start+visible)
+	for _, line := range lines[start:end] {
+		output.WriteString(ui.Truncate(ui.Sanitize(line), width))
+		output.WriteByte('\n')
+	}
+	return output.String()
+}
+
+func (model Model) detailLines() []string {
+	if model.detailYAML {
+		return strings.Split(strings.TrimSuffix(model.detail.YAML, "\n"), "\n")
+	}
+	detail := model.detail
+	lines := []string{
+		"Name: " + detail.Summary.Name,
+		"Namespace: " + displayNamespace(detail.Summary.Namespace),
+		"UID: " + detail.Summary.UID,
+		"Resource version: " + detail.Summary.ResourceVersion,
+		"Status: " + detail.Summary.Status,
+		"Created: " + displayTime(detail.Summary.CreationTimestamp),
+	}
+	if detail.Summary.Template != "" {
+		lines = append(lines, "Template: "+detail.Summary.Template)
+	}
+	lines = append(lines, "", "Labels:")
+	lines = appendMap(lines, detail.Labels)
+	lines = append(lines, "", "Annotations:")
+	lines = appendMap(lines, detail.Annotations)
+	lines = append(lines, "", "Owners:")
+	if len(detail.Owners) == 0 {
+		lines = append(lines, "  —")
+	}
+	for _, owner := range detail.Owners {
+		lines = append(lines, fmt.Sprintf("  %s/%s (%s)", owner.Kind, owner.Name, owner.UID))
+	}
+	lines = append(lines, "", "Conditions:")
+	if len(detail.Conditions) == 0 {
+		lines = append(lines, "  —")
+	}
+	for _, condition := range detail.Conditions {
+		line := fmt.Sprintf("  %s=%s", condition.Type, condition.Status)
+		if condition.Reason != "" {
+			line += " reason=" + condition.Reason
+		}
+		lines = append(lines, line)
+		if condition.Message != "" {
+			lines = append(lines, "    "+condition.Message)
+		}
+	}
+	return lines
+}
+
+func appendMap(lines []string, values map[string]string) []string {
+	if len(values) == 0 {
+		return append(lines, "  —")
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		lines = append(lines, fmt.Sprintf("  %s=%s", key, values[key]))
+	}
+	return lines
+}
+
+func displayNamespace(namespace string) string {
+	if namespace == "" {
+		return "cluster-scoped"
+	}
+	return namespace
+}
+
+func displayTime(value time.Time) string {
+	if value.IsZero() {
+		return "unknown"
+	}
+	return value.Format(time.RFC3339)
 }
 
 func (model Model) renderWorkflows(output *strings.Builder, width int) {
