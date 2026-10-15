@@ -1,0 +1,31 @@
+name: release
+
+# Publish platform binaries and checksums on each version tag.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Check and build
+        run: make release-check VERSION="$GITHUB_REF_NAME" BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+      - name: Checksums
+        working-directory: bin/release-check
+        run: sha256sum argowt-* > checksums.txt
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" bin/release-check/* --generate-notes

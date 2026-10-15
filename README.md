@@ -33,6 +33,20 @@ Template submission is implemented. Retry, resubmit, suspend, resume, stop, term
 - [Test and cluster-safety specification](specs/test-spec.md)
 - [Implementation plan](specs/implementation-plan.md)
 
+## Install
+
+Install the latest release binary (macOS and Linux, amd64 and arm64):
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/JeronimoMendes/argowt/main/install.sh | sh
+```
+
+Set `BINDIR` (default `~/.local/bin`) or `ARGOWT_VERSION` (default latest, e.g. `v1.2.0`) to change the install directory or version.
+
+`argowt update` replaces the binary with the latest release. The TUI shows a notice when a newer release exists.
+
+Pushing a `v*` tag builds and publishes a release.
+
 ## Development
 
 Go 1.24.2 or newer is required.

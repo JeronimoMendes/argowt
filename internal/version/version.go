@@ -3,8 +3,11 @@ package version
 
 import "fmt"
 
+// Dev is the version of local builds without a release tag.
+const Dev = "dev"
+
 var (
-	Version = "dev"
+	Version = Dev
 	Commit  = "unknown"
 	Date    = "unknown"
 )

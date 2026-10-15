@@ -17,8 +17,10 @@ import (
 	"argowt/internal/kube"
 	applogs "argowt/internal/logs"
 	"argowt/internal/notify"
+	"argowt/internal/release"
 	"argowt/internal/resources"
 	"argowt/internal/ui"
+	"argowt/internal/version"
 	"argowt/internal/workflows"
 )
 
@@ -26,6 +28,9 @@ var theme = ui.DefaultTheme()
 
 // maxWarningScopes caps the scopes named in one grouped warning line.
 const maxWarningScopes = 3
+
+// updateCheckTimeout bounds the startup release check so offline runs stay quiet.
+const updateCheckTimeout = 10 * time.Second
 
 // Options contains process-level settings established by the CLI. It contains
 // no Kubernetes clients, credentials, or persisted resource data.
@@ -92,6 +97,7 @@ func Run(ctx context.Context, options Options) error {
 		StartupWarning:      stateErr,
 		Clipboard:           clipboard.Copy,
 		Open:                options.Open,
+		CheckUpdate:         checkUpdate,
 	})
 
 	_, err = tea.NewProgram(model, tea.WithContext(ctx), tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
@@ -109,6 +115,23 @@ func scopeLabel(options Options, defaultNamespace string) string {
 		return strings.Join(options.Namespaces, ",")
 	}
 	return defaultNamespace
+}
+
+// checkUpdate returns a newer release tag, or "" when up to date, offline,
+// or running a local dev build.
+func checkUpdate(ctx context.Context) string {
+	if version.Version == version.Dev {
+		return ""
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, updateCheckTimeout)
+	defer cancel()
+
+	tag, err := release.Latest(ctx)
+	if err != nil || !release.Newer(version.Version, tag) {
+		return ""
+	}
+	return tag
 }
 
 type WorkflowExecutionRepository interface {
@@ -159,6 +182,7 @@ type ModelOptions struct {
 	Namespaces          []string
 	CurrentNamespace    string
 	Open                argourl.Target
+	CheckUpdate         func(context.Context) string
 }
 
 type Model struct {
@@ -210,6 +234,8 @@ type Model struct {
 	executionSelectedID string
 	executionScroll     int
 	open                argourl.Target
+	checkUpdate         func(context.Context) string
+	updateTag           string
 
 	notificationManager  NotificationManager
 	notificationEvents   <-chan notify.Event
@@ -351,6 +377,11 @@ type logReconnectMessage struct {
 	generation uint64
 }
 
+// updateMessage carries a newer release tag found at startup.
+type updateMessage struct {
+	tag string
+}
+
 // openMessage opens the startup URL target once the program runs.
 type openMessage struct{}
 
@@ -419,6 +450,7 @@ func NewModel(options ModelOptions) Model {
 		resourceState:        "loading",
 		executionMode:        "tree",
 		open:                 options.Open,
+		checkUpdate:          options.CheckUpdate,
 	}
 }
 
@@ -436,7 +468,17 @@ func (model Model) Init() tea.Cmd {
 	if model.open.Kind != "" {
 		commands = append(commands, func() tea.Msg { return openMessage{} })
 	}
+	if model.checkUpdate != nil {
+		commands = append(commands, findUpdate(model.rootContext, model.checkUpdate))
+	}
 	return tea.Batch(commands...)
+}
+
+// findUpdate checks for a newer release off the UI thread.
+func findUpdate(ctx context.Context, check func(context.Context) string) tea.Cmd {
+	return func() tea.Msg {
+		return updateMessage{tag: check(ctx)}
+	}
 }
 
 func waitForSnapshot(updates <-chan workflows.Snapshot) tea.Cmd {
@@ -609,6 +651,9 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		return model, tea.Batch(waitForExecution(message.updates), previewCommand)
 	case openMessage:
 		return model.openTarget(model.open)
+	case updateMessage:
+		model.updateTag = message.tag
+		return model, nil
 	case notificationMessage:
 		model.notifications = append(model.notifications, message.event)
 		if len(model.notifications) > 5 {
@@ -1354,6 +1399,9 @@ func (model Model) screen() string {
 	output.WriteString("\n")
 	if model.notificationWarning != nil {
 		fmt.Fprintf(&output, "%s\n", theme.Error.Render("! notification: "+ui.Sanitize(model.notificationWarning.Error())))
+	}
+	if model.updateTag != "" {
+		fmt.Fprintf(&output, "%s\n", theme.Info.Render("↑ argowt "+ui.Sanitize(model.updateTag)+" available · run: argowt update"))
 	}
 	if len(model.notifications) > 0 {
 		latest := model.notifications[len(model.notifications)-1]

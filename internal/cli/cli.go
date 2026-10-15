@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"argowt/internal/app"
 	"argowt/internal/argourl"
 	"argowt/internal/config"
+	"argowt/internal/release"
 	"argowt/internal/version"
 )
 
@@ -20,6 +22,7 @@ const helpText = `argowt monitors and operates Argo Workflows from the terminal.
 
 Usage:
   argowt [flags] [URL]
+  argowt update           install the latest release
 
 URL is an Argo web UI link to open, e.g.
 https://argo.example.com/workflows/argo/hello?nodeId=hello-123
@@ -41,6 +44,10 @@ type Runner func(context.Context, app.Options) error
 // Run parses arguments and invokes run. Help and version return before paths are
 // resolved or any application dependencies are constructed.
 func Run(ctx context.Context, args []string, stdout, stderr io.Writer, run Runner) error {
+	if len(args) == 1 && args[0] == "update" {
+		return update(ctx, stdout)
+	}
+
 	flags := flag.NewFlagSet("argowt", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	flags.Usage = func() {
@@ -115,6 +122,34 @@ func Run(ctx context.Context, args []string, stdout, stderr io.Writer, run Runne
 	}
 
 	return run(ctx, opts)
+}
+
+// update replaces the running binary with the latest release.
+func update(ctx context.Context, stdout io.Writer) error {
+	tag, err := release.Latest(ctx)
+	if err != nil {
+		return fmt.Errorf("find latest release: %w", err)
+	}
+	if !release.Newer(version.Version, tag) {
+		_, err := fmt.Fprintf(stdout, "argowt is up to date (%s)\n", tag)
+		return err
+	}
+
+	// Resolve symlinks so the real file is replaced, not the link.
+	path, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	path, err = filepath.EvalSymlinks(path)
+	if err != nil {
+		return err
+	}
+
+	if err := release.Install(ctx, tag, path); err != nil {
+		return fmt.Errorf("install %s: %w", tag, err)
+	}
+	_, err = fmt.Fprintf(stdout, "Updated argowt %s → %s\n", version.Version, tag)
+	return err
 }
 
 type optionalString struct {

@@ -544,6 +544,11 @@ func TestViewSanitizesAPIValues(t *testing.T) {
 	if !strings.Contains(view, "▶ Running") {
 		t.Fatalf("view does not include textual status: %q", view)
 	}
+
+	updated, _ := model.Update(updateMessage{tag: "v1.2.0"})
+	if view := updated.View(); !strings.Contains(view, "argowt v1.2.0 available") {
+		t.Fatalf("view does not include update notice: %q", view)
+	}
 }
 
 func TestMouseDragCopiesSelectedText(t *testing.T) {
