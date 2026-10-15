@@ -131,7 +131,7 @@ func TestAllNamespaceSuccessUsesOneClusterWideWatch(t *testing.T) {
 	clusterWide.mu.Lock()
 	selector := clusterWide.lastOptions.LabelSelector
 	clusterWide.mu.Unlock()
-	if selector != ControllerInstanceIDLabel+"=controller-a" {
+	if selector != CompletedLabel+"!=true,"+ControllerInstanceIDLabel+"=controller-a" {
 		t.Fatalf("label selector = %q", selector)
 	}
 }

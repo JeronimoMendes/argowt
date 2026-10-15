@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -204,11 +205,24 @@ func (repository *Repository) fallbackScopes(ctx context.Context, request Reques
 }
 
 func (repository *Repository) listScopes(ctx context.Context, request Request, scopes []string) (map[string]scopeState, map[string]string, bool, error) {
+	// List all scopes in parallel. Sequential lists add up to seconds on clusters with many namespaces.
+	lists := make([]*unstructured.UnstructuredList, len(scopes))
+	errs := make([]error, len(scopes))
+	var group sync.WaitGroup
+	for index, scope := range scopes {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			lists[index], errs[index] = repository.list(ctx, request, scope)
+		}()
+	}
+	group.Wait()
+
 	states := make(map[string]scopeState, len(scopes))
 	warnings := make(map[string]string)
 	var failures []error
-	for _, scope := range scopes {
-		list, err := repository.list(ctx, request, scope)
+	for index, scope := range scopes {
+		list, err := lists[index], errs[index]
 		if apierrors.IsNotFound(err) {
 			return nil, nil, true, nil
 		}

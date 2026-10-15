@@ -12,6 +12,9 @@ import (
 
 const ControllerInstanceIDLabel = "workflows.argoproj.io/controller-instanceid"
 
+// CompletedLabel is set to "true" by the Argo controller when a workflow completes.
+const CompletedLabel = "workflows.argoproj.io/completed"
+
 type Summary struct {
 	Namespace         string
 	Name              string

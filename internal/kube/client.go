@@ -12,6 +12,13 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 )
 
+// Client-side rate limits. The client-go defaults (QPS 5, Burst 10) throttle
+// per-namespace fallback lists: 44 namespaces took ~12s instead of ~4s.
+const (
+	clientQPS   = 50
+	clientBurst = 100
+)
+
 type Options struct {
 	Kubeconfig string
 	Context    string
@@ -67,6 +74,8 @@ func (ClientBuilder) Build(options Options) (*Connection, error) {
 		return nil, fmt.Errorf("construct Kubernetes client configuration: %w", err)
 	}
 	restConfig.UserAgent = "argowt"
+	restConfig.QPS = clientQPS
+	restConfig.Burst = clientBurst
 
 	argo, err := argoclient.NewForConfig(restConfig)
 	if err != nil {
