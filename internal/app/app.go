@@ -13,6 +13,7 @@ import (
 	"argowt/internal/config"
 	"argowt/internal/filter"
 	"argowt/internal/kube"
+	applogs "argowt/internal/logs"
 	"argowt/internal/notify"
 	"argowt/internal/resources"
 	"argowt/internal/ui"
@@ -49,6 +50,7 @@ func Run(ctx context.Context, options Options) error {
 	repository := workflows.NewRepository(workflowSource, namespaceLister)
 	resourceRepository := resources.NewRepository(connection.Dynamic, connection.Kubernetes.Discovery(), namespaceLister)
 	submissionService := workflows.NewSubmissionService(connection.Argo)
+	logService := applogs.NewService(connection.Kubernetes)
 	watchContext, cancel := context.WithCancel(ctx)
 	defer cancel()
 	state, stateErr := config.LoadState(options.Paths.StateFile)
@@ -81,6 +83,7 @@ func Run(ctx context.Context, options Options) error {
 		CurrentNamespace:    connection.DefaultNamespace,
 		NotificationManager: notificationManager,
 		SubmissionService:   submissionService,
+		LogService:          logService,
 		StartupWarning:      stateErr,
 	})
 
@@ -118,6 +121,11 @@ type NotificationManager interface {
 	SetTransitions(string, []string, bool) error
 }
 
+type LogService interface {
+	Discover(context.Context, string, string, string, string) (applogs.Pod, error)
+	Stream(context.Context, applogs.Request) <-chan applogs.Event
+}
+
 type TemplateSubmissionService interface {
 	Prepare(context.Context, workflows.SubmissionSource, string) (workflows.SubmissionForm, error)
 	Submit(context.Context, workflows.SubmissionRequest) (workflows.SubmissionResult, error)
@@ -141,6 +149,7 @@ type ModelOptions struct {
 	ExecutionRepository WorkflowExecutionRepository
 	NotificationManager NotificationManager
 	SubmissionService   TemplateSubmissionService
+	LogService          LogService
 	StartupWarning      error
 	AllNamespaces       bool
 	Namespaces          []string
@@ -211,6 +220,30 @@ type Model struct {
 	submissionError   error
 	submissionResult  *workflows.SubmissionResult
 
+	logService          LogService
+	logVisible          bool
+	logGeneration       uint64
+	logNode             workflows.Node
+	logPod              applogs.Pod
+	logContainer        int
+	logPrevious         bool
+	logFollow           bool
+	logTimestamps       bool
+	logWrap             bool
+	logBuffer           *applogs.Buffer
+	logUpdates          <-chan applogs.Event
+	logCancel           context.CancelFunc
+	logState            string
+	logError            error
+	logQuery            string
+	logSearching        bool
+	logAutoScroll       bool
+	logOffset           int
+	logSaving           bool
+	logSavePath         string
+	logNotice           string
+	logReconnectAttempt int
+
 	connectionState workflows.ConnectionState
 	items           []workflows.Summary
 	partialErrors   map[string]string
@@ -278,6 +311,23 @@ type submissionResultMessage struct {
 	err    error
 }
 
+type logDiscoveryMessage struct {
+	generation uint64
+	pod        applogs.Pod
+	err        error
+}
+
+type logEventMessage struct {
+	generation uint64
+	event      applogs.Event
+	updates    <-chan applogs.Event
+	open       bool
+}
+
+type logReconnectMessage struct {
+	generation uint64
+}
+
 func NewModel(options ModelOptions) Model {
 	workflowDescriptor, _ := resources.Lookup("workflows")
 	available := make(map[resources.Kind]bool)
@@ -309,6 +359,10 @@ func NewModel(options ModelOptions) Model {
 		notificationWarnings: notificationWarnings,
 		notificationWarning:  options.StartupWarning,
 		submissionService:    options.SubmissionService,
+		logService:           options.LogService,
+		logFollow:            true,
+		logWrap:              true,
+		logAutoScroll:        true,
 		allNamespaces:        options.AllNamespaces,
 		namespaces:           append([]string(nil), options.Namespaces...),
 		currentNamespace:     options.CurrentNamespace,
@@ -379,6 +433,31 @@ func submitTemplate(ctx context.Context, service TemplateSubmissionService, requ
 		result, err := service.Submit(ctx, request)
 		return submissionResultMessage{result: result, err: err}
 	}
+}
+
+func discoverNodeLog(ctx context.Context, service LogService, generation uint64, namespace, workflowName, nodeID, nodeName string) tea.Cmd {
+	return func() tea.Msg {
+		pod, err := service.Discover(ctx, namespace, workflowName, nodeID, nodeName)
+		return logDiscoveryMessage{generation: generation, pod: pod, err: err}
+	}
+}
+
+func waitForLogEvent(generation uint64, updates <-chan applogs.Event) tea.Cmd {
+	return func() tea.Msg {
+		event, open := <-updates
+		return logEventMessage{generation: generation, event: event, updates: updates, open: open}
+	}
+}
+
+func reconnectLogAfter(generation uint64, attempt int) tea.Cmd {
+	if attempt > 5 {
+		attempt = 5
+	}
+	delay := time.Second * time.Duration(1<<attempt)
+	if delay > 30*time.Second {
+		delay = 30 * time.Second
+	}
+	return tea.Tick(delay, func(time.Time) tea.Msg { return logReconnectMessage{generation: generation} })
 }
 
 func discoverResources(ctx context.Context, repository ResourceRepository) tea.Cmd {
@@ -494,6 +573,56 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			model.submissionStage = "confirm"
 		}
 		return model, nil
+	case logDiscoveryMessage:
+		if message.generation != model.logGeneration || !model.logVisible {
+			return model, nil
+		}
+		model.logError = message.err
+		if message.err != nil {
+			model.logState = "unavailable"
+			return model, nil
+		}
+		model.logPod = message.pod
+		if len(message.pod.Containers) == 0 {
+			model.logState = "unavailable"
+			model.logError = fmt.Errorf("pod %s has no loggable containers", message.pod.Name)
+			return model, nil
+		}
+		model.logContainer = 0
+		return model.startLogStream(true)
+	case logEventMessage:
+		if !message.open {
+			return model, nil
+		}
+		if message.generation != model.logGeneration || !model.logVisible {
+			return model, waitForLogEvent(message.generation, message.updates)
+		}
+		if len(message.event.Lines) > 0 {
+			model.logBuffer.Append(message.event.Lines...)
+			model.logError = nil
+			model.logState = "streaming"
+			model.logReconnectAttempt = 0
+			if model.logAutoScroll {
+				model.logOffset = 0
+			}
+		}
+		if message.event.Err != nil {
+			model.logError = message.event.Err
+			model.logState = "reconnecting"
+			attempt := model.logReconnectAttempt
+			model.logReconnectAttempt++
+			return model, reconnectLogAfter(model.logGeneration, attempt)
+		}
+		if message.event.Ended {
+			model.logState = "ended"
+			return model, nil
+		}
+		return model, waitForLogEvent(message.generation, message.updates)
+	case logReconnectMessage:
+		if message.generation != model.logGeneration || !model.logVisible {
+			return model, nil
+		}
+		return model.startLogStream(false)
 	case tea.WindowSizeMsg:
 		model.width = message.Width
 		model.height = message.Height
@@ -542,6 +671,9 @@ func (model Model) updateMouse(mouse tea.MouseMsg) (tea.Model, tea.Cmd) {
 }
 
 func (model Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if model.logVisible {
+		return model.updateLogKey(key)
+	}
 	if model.submissionVisible {
 		return model.updateSubmissionKey(key)
 	}
@@ -1057,6 +1189,9 @@ func (model Model) View() string {
 	width := model.width
 	if width <= 0 {
 		width = 100
+	}
+	if model.logVisible {
+		return model.logView(width)
 	}
 	if model.submissionVisible {
 		return model.submissionView(width)

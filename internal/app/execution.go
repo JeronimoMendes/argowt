@@ -95,6 +95,8 @@ func (model Model) updateExecutionKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		model.toggleSelectedNotification()
 	case "N":
 		model.openNotificationConfig()
+	case "enter", "o":
+		return model.openSelectedNodeLogs()
 	}
 	return model, nil
 }
@@ -175,7 +177,7 @@ func (model Model) executionView(width int) string {
 		theme.Title.Render("argowt"), theme.Muted.Render("workflow"), theme.Accent.Render(ui.Sanitize(name)),
 		theme.Muted.Render("mode"), theme.Info.Render(model.executionMode),
 		theme.Muted.Render("phase"), theme.Status(ui.Sanitize(phase), phase), theme.Warning.Render(watchIndicator))
-	output.WriteString(theme.Muted.Render("t tree · d DAG · l table · Tab next view · j/k navigate · n toggle notify · N configure · Esc back · q quit") + "\n")
+	output.WriteString(theme.Muted.Render("t tree · d DAG · l table · Tab next view · j/k navigate · Enter/o live logs · n toggle notify · N configure · Esc back · q quit") + "\n")
 	if model.executionStale {
 		output.WriteString(theme.Warning.Render("! execution data is stale; reconnecting") + "\n")
 	}

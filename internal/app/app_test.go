@@ -7,6 +7,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	applogs "argowt/internal/logs"
 	"argowt/internal/notify"
 	"argowt/internal/resources"
 	"argowt/internal/workflows"
@@ -132,6 +133,21 @@ func (manager *fakeNotificationManager) SetTransitions(uid string, transitions [
 	manager.transitions[uid] = append([]string(nil), transitions...)
 	manager.desktop[uid] = desktop
 	return nil
+}
+
+type fakeLogService struct {
+	pod      applogs.Pod
+	events   chan applogs.Event
+	requests chan applogs.Request
+}
+
+func (service *fakeLogService) Discover(context.Context, string, string, string, string) (applogs.Pod, error) {
+	return service.pod, nil
+}
+
+func (service *fakeLogService) Stream(_ context.Context, request applogs.Request) <-chan applogs.Event {
+	service.requests <- request
+	return service.events
 }
 
 type fakeSubmissionService struct {
@@ -298,6 +314,56 @@ func TestEnterOpensLiveWorkflowExecutionAndPreservesSelection(t *testing.T) {
 	}
 	if executionRepository.namespace != "argo" || executionRepository.name != "example" || executionRepository.uid != "uid-1" {
 		t.Fatalf("unexpected execution identity: %+v", executionRepository)
+	}
+}
+
+func TestOpenLiveNodeLogsAndSwitchOptions(t *testing.T) {
+	logService := &fakeLogService{
+		pod: applogs.Pod{
+			Namespace: "argo", Name: "example-task", Phase: "Running",
+			Containers: []applogs.Container{{Name: "main", Kind: "main", HasPrevious: true}, {Name: "wait", Kind: "wait"}},
+		},
+		events: make(chan applogs.Event, 2), requests: make(chan applogs.Request, 3),
+	}
+	model := NewModel(ModelOptions{Generation: 1, RootContext: context.Background(), LogService: logService})
+	model.executionVisible = true
+	model.executionGeneration = 1
+	model.executionSelectedID = "node-1"
+	model.execution = &workflows.Execution{
+		Namespace: "argo", Name: "example", UID: "uid-1", Phase: "Running",
+		Nodes: map[string]workflows.Node{"node-1": {ID: "node-1", Name: "example.task", DisplayName: "task", Type: "Pod", Phase: "Running"}},
+		Roots: []string{"node-1"},
+	}
+
+	updated, discover := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = updated.(Model)
+	if !model.logVisible || discover == nil {
+		t.Fatal("log view did not open")
+	}
+	updated, stream := model.Update(discover())
+	model = updated.(Model)
+	if stream == nil {
+		t.Fatal("log stream did not start")
+	}
+	request := <-logService.requests
+	if request.Pod != "example-task" || request.Container != "main" || !request.Follow {
+		t.Fatalf("request = %+v", request)
+	}
+	logService.events <- applogs.Event{Lines: []string{"starting task", "task complete"}}
+	updated, _ = model.Update(stream())
+	model = updated.(Model)
+	if view := model.View(); !strings.Contains(view, "task complete") || !strings.Contains(view, "example-task") {
+		t.Fatalf("log view = %q", view)
+	}
+
+	updated, restart := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	model = updated.(Model)
+	if restart == nil {
+		t.Fatal("previous-log toggle did not restart the stream")
+	}
+	request = <-logService.requests
+	if !request.Previous || request.Follow {
+		t.Fatalf("previous request = %+v", request)
 	}
 }
 
