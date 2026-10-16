@@ -41,6 +41,8 @@ func (model Model) startExecution(namespace, name, uid string) (tea.Model, tea.C
 	model.execution = nil
 	model.executionError = nil
 	model.executionStale = false
+	model.actionNotice = ""
+	model.actionError = nil
 	model.executionMode = "tree"
 	model.executionCursor = 0
 	model.executionScroll = 0
@@ -86,6 +88,7 @@ func (model Model) openTarget(target argourl.Target) (tea.Model, tea.Cmd) {
 	return model, tea.Batch(command, executionCommand)
 }
 
+// updateExecutionKey handles execution navigation, display modes, and workflow shortcuts.
 func (model Model) updateExecutionKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	selectedBefore := model.executionSelectedID
 	switch key.String() {
@@ -95,17 +98,10 @@ func (model Model) updateExecutionKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return model, tea.Quit
 	case "esc", "backspace":
-		if model.executionCancel != nil {
-			model.executionCancel()
-		}
-		if model.nodePreviewCancel != nil {
-			model.nodePreviewCancel()
-		}
-		model.executionVisible = false
-		model.execution = nil
-		model.executionError = nil
-		model.executionSelectedID = ""
+		model.closeExecution()
 		return model, nil
+	case "a":
+		return model.openActions()
 	case "tab":
 		return model.toggleNodePanel()
 	case "t":
@@ -142,6 +138,20 @@ func (model Model) updateExecutionKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return model, model.scheduleNodePreview()
 	}
 	return model, nil
+}
+
+// closeExecution stops the execution watch and returns to the list.
+func (model *Model) closeExecution() {
+	if model.executionCancel != nil {
+		model.executionCancel()
+	}
+	if model.nodePreviewCancel != nil {
+		model.nodePreviewCancel()
+	}
+	model.executionVisible = false
+	model.execution = nil
+	model.executionError = nil
+	model.executionSelectedID = ""
 }
 
 func (model *Model) moveExecutionCursor(delta int) {
@@ -206,6 +216,7 @@ func (model Model) executionNodeIDs() []string {
 
 var executionModes = []string{"tree", "dag", "table"}
 
+// executionView renders workflow status, action outcomes, and execution panels.
 func (model Model) executionView(width int) string {
 	name := "workflow"
 	status := theme.Info.Render("◌ loading")
@@ -224,13 +235,14 @@ func (model Model) executionView(width int) string {
 	if model.executionError != nil {
 		lines = append(lines, theme.Error.Render(" ! "+ui.Sanitize(model.executionError.Error())))
 	}
+	lines = append(lines, model.actionStatusLines()...)
 	if model.execution != nil && model.execution.Message != "" {
 		lines = append(lines, theme.Muted.Render(" message ")+theme.Warning.Render(ui.Sanitize(model.execution.Message)))
 	}
 	for index := range lines {
 		lines[index] = ui.TruncateStyled(lines[index], width)
 	}
-	footer := theme.Keys(width, "j/k", "move", "t/d/l", "tree/DAG/table", "Tab", "details/logs", "Enter", "full logs", "n", "notify", "N", "configure", ":", "commands", "Esc", "back", "q", "quit")
+	footer := theme.Keys(width, "j/k", "move", "t/d/l", "tree/DAG/table", "Tab", "details/logs", "Enter", "full logs", "a", "actions", "n", "notify", "N", "configure", ":", "commands", "Esc", "back", "q", "quit")
 	return model.frame(strings.Join(lines, "\n"), footer, func(rows int) string {
 		return model.executionPanels(width, rows)
 	})

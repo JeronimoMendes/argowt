@@ -19,6 +19,8 @@ type Execution struct {
 	UID             string
 	ResourceVersion string
 	Phase           string
+	Suspended       bool
+	SuspendNode     bool
 	Message         string
 	Nodes           map[string]Node
 	Roots           []string
@@ -178,6 +180,8 @@ func sendExecution(ctx context.Context, output chan<- ExecutionUpdate, update Ex
 	}
 }
 
+// NormalizeExecution copies workflow identity, state, and nodes into an execution view.
+// It preserves missing child references as unknown nodes and identifies graph roots.
 func NormalizeExecution(workflow *wfv1.Workflow) Execution {
 	if workflow == nil {
 		return Execution{Nodes: map[string]Node{}}
@@ -188,6 +192,8 @@ func NormalizeExecution(workflow *wfv1.Workflow) Execution {
 		UID:             string(workflow.UID),
 		ResourceVersion: workflow.ResourceVersion,
 		Phase:           string(workflow.Status.Phase),
+		Suspended:       workflow.Spec.Suspend != nil && *workflow.Spec.Suspend,
+		SuspendNode:     waitingOnSuspendNode(workflow),
 		Message:         workflow.Status.Message,
 		Nodes:           make(map[string]Node, len(workflow.Status.Nodes)),
 	}

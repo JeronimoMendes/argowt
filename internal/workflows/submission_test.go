@@ -10,6 +10,7 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 )
 
+// TestPrepareWorkflowTemplateParameters checks template parameter defaults, required fields, and destination namespace.
 func TestPrepareWorkflowTemplateParameters(t *testing.T) {
 	template := &wfv1.WorkflowTemplate{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "argo", Name: "payments"},
@@ -19,7 +20,7 @@ func TestPrepareWorkflowTemplateParameters(t *testing.T) {
 		}}},
 	}
 	service := NewSubmissionService(argofake.NewSimpleClientset(template))
-	form, err := service.Prepare(context.Background(), SubmissionSource{Namespace: "argo", Name: "payments"}, "")
+	form, err := service.Prepare(context.Background(), SubmissionSource{Kind: SourceWorkflowTemplate, Namespace: "argo", Name: "payments"}, "")
 	if err != nil {
 		t.Fatalf("Prepare() error = %v", err)
 	}
@@ -34,11 +35,12 @@ func TestPrepareWorkflowTemplateParameters(t *testing.T) {
 	}
 }
 
+// TestSubmitCreatesWorkflowTemplateReference checks the template scope, namespace, and parameter values in the created workflow.
 func TestSubmitCreatesWorkflowTemplateReference(t *testing.T) {
 	client := argofake.NewSimpleClientset()
 	service := NewSubmissionService(client)
 	_, err := service.Submit(context.Background(), SubmissionRequest{
-		Source:               SubmissionSource{Name: "global-template", Cluster: true},
+		Source:               SubmissionSource{Kind: SourceClusterWorkflowTemplate, Name: "global-template"},
 		DestinationNamespace: "jobs",
 		Parameters:           map[string]string{"message": "hello", "count": "3"},
 	})
@@ -65,9 +67,10 @@ func TestSubmitCreatesWorkflowTemplateReference(t *testing.T) {
 	}
 }
 
+// TestSubmitRejectsMissingDestination checks that submission requires a destination namespace.
 func TestSubmitRejectsMissingDestination(t *testing.T) {
 	service := NewSubmissionService(argofake.NewSimpleClientset())
-	if _, err := service.Submit(context.Background(), SubmissionRequest{Source: SubmissionSource{Name: "template"}}); err == nil {
+	if _, err := service.Submit(context.Background(), SubmissionRequest{Source: SubmissionSource{Kind: SourceWorkflowTemplate, Name: "template"}}); err == nil {
 		t.Fatal("Submit() expected an error")
 	}
 }
