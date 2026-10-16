@@ -1,0 +1,94 @@
+# Workflows started by `make dev-up` on a cluster without any, and by
+# `make dev-seed`. Durations differ so they sit at different steps.
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: etl-payments-
+spec:
+  workflowTemplateRef: {name: etl-pipeline}
+  arguments:
+    parameters:
+    - {name: seconds-per-step, value: "180"}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: etl-orders-
+spec:
+  workflowTemplateRef: {name: etl-pipeline}
+  arguments:
+    parameters:
+    - {name: dataset, value: orders}
+    - {name: seconds-per-step, value: "40"}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: build-test-deploy-
+spec:
+  workflowTemplateRef: {name: build-test-deploy}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: build-test-deploy-
+spec:
+  workflowTemplateRef: {name: build-test-deploy}
+  arguments:
+    parameters:
+    - {name: env, value: production}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: fan-out-
+spec:
+  workflowTemplateRef: {name: fan-out}
+  arguments:
+    parameters:
+    - {name: seconds, value: "300"}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: release-approval-
+spec:
+  workflowTemplateRef: {name: release-approval}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: long-running-
+spec:
+  workflowTemplateRef: {name: long-running}
+  arguments:
+    parameters:
+    - {name: minutes, value: "30"}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: nested-pipeline-
+spec:
+  workflowTemplateRef: {name: nested-pipeline}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: always-fails-
+spec:
+  workflowTemplateRef: {name: always-fails}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: quick-hello-
+spec:
+  workflowTemplateRef: {name: quick-hello}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: Workflow
+metadata:
+  generateName: cluster-healthcheck-
+spec:
+  workflowTemplateRef: {name: cluster-healthcheck, clusterScope: true}

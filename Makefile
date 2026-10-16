@@ -10,7 +10,7 @@ LDFLAGS := -s -w \
 	-X argowt/internal/version.Commit=$(COMMIT) \
 	-X argowt/internal/version.Date=$(BUILD_DATE)
 
-.PHONY: all build install fmt fmt-check test vet cross-build release-check clean dev-up dev-down dev-run
+.PHONY: all build install fmt fmt-check test vet cross-build release-check clean dev-up dev-down dev-run dev-seed dev-submit
 
 all: build
 
@@ -54,3 +54,10 @@ dev-down:
 
 dev-run: build
 	dev/cluster.sh run
+
+dev-seed:
+	dev/cluster.sh seed
+
+# make dev-submit T=etl-pipeline P="dataset=orders seconds-per-step=10"
+dev-submit:
+	dev/cluster.sh submit $(T) $(P)

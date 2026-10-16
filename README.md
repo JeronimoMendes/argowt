@@ -57,10 +57,14 @@ make test           # cluster-free unit tests
 make build          # build bin/argowt
 make install        # install to ~/.local/bin by default
 make release-check  # format, test, vet, and cross-compile release targets
-make dev-up         # local kind cluster with Argo (isolated under .dev/)
+make dev-up         # local kind cluster with Argo and sample workflows (isolated under .dev/)
 make dev-run        # run argowt against it
+make dev-seed       # start the sample workflows again
+make dev-submit T=etl-pipeline P="dataset=orders"  # start a workflow from a template
 make dev-down       # delete it
 ```
+
+The dev cluster comes with the templates, cluster templates, and cron workflows in `dev/samples/templates.yaml`, from 15-second checks to 30-minute jobs, plus a pipeline waiting on approval and jobs that fail or retry. A fresh cluster also starts the workflows in `dev/samples/workflows.yaml`.
 
 Ordinary tests do not load kubeconfig or contact Kubernetes. Disposable-cluster integration commands will be added with the isolated integration harness described in the test specification.
 

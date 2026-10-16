@@ -1,0 +1,389 @@
+# Sample templates applied by `make dev-up`. Most steps reuse dev-step, which
+# logs progress for a number of seconds and can fail on purpose.
+#
+#   quick (~15 s):  quick-hello, quick-checks, cluster-healthcheck
+#   minutes:        build-test-deploy, etl-pipeline, fan-out, nested-pipeline,
+#                   flaky-job, always-fails, cluster-cleanup
+#   long / waiting: long-running, release-approval (suspends for approval)
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: dev-step
+  namespace: argo
+spec:
+  templates:
+  - name: run
+    inputs:
+      parameters:
+      - name: label
+      - name: seconds
+        value: "10"
+      - name: fail
+        value: "false"
+    container:
+      image: busybox:1.36
+      command: [sh, -c]
+      args:
+      - |
+        label="{{inputs.parameters.label}}"
+        total={{inputs.parameters.seconds}}
+        echo "[$label] starting, ${total}s of work"
+        for i in $(seq 1 "$total"); do
+          if [ $((i % 23)) -eq 0 ]; then
+            echo "[$label] WARN slow response from upstream, retrying"
+          else
+            echo "[$label] $i/$total processed $((i * 37 % 1000)) records"
+          fi
+          sleep 1
+        done
+        if [ "{{inputs.parameters.fail}}" = true ]; then
+          echo "[$label] ERROR step failed on purpose" >&2
+          exit 1
+        fi
+        echo "[$label] done"
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: quick-hello
+  namespace: argo
+  labels:
+    speed: quick
+spec:
+  entrypoint: main
+  arguments:
+    parameters:
+    - name: message
+      value: hello from argowt
+      description: Text to print
+  templates:
+  - name: main
+    container:
+      image: busybox:1.36
+      command: [sh, -c, "echo '{{workflow.parameters.message}}'; sleep 10; echo bye"]
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: quick-checks
+  namespace: argo
+  labels:
+    speed: quick
+spec:
+  entrypoint: main
+  templates:
+  - name: main
+    steps:
+    - - {name: lint, templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: lint}, {name: seconds, value: "4"}]}}
+      - {name: typecheck, templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: typecheck}, {name: seconds, value: "6"}]}}
+      - {name: audit, templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: audit}, {name: seconds, value: "5"}]}}
+    - - {name: summary, templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: summary}, {name: seconds, value: "3"}]}}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: build-test-deploy
+  namespace: argo
+  labels:
+    speed: minutes
+    team: platform
+spec:
+  entrypoint: main
+  arguments:
+    parameters:
+    - name: env
+      value: staging
+      enum: [staging, production]
+      description: Where to deploy
+  templates:
+  - name: main
+    steps:
+    - - {name: checkout, templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: checkout}, {name: seconds, value: "8"}]}}
+    - - {name: unit-tests, templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: unit-tests}, {name: seconds, value: "45"}]}}
+      - {name: lint, templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: lint}, {name: seconds, value: "15"}]}}
+      - {name: integration-tests, templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: integration-tests}, {name: seconds, value: "70"}]}}
+    - - {name: package, templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: package}, {name: seconds, value: "20"}]}}
+    - - {name: deploy, templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: "deploy-{{workflow.parameters.env}}"}, {name: seconds, value: "30"}]}}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: etl-pipeline
+  namespace: argo
+  labels:
+    speed: minutes
+    team: data
+spec:
+  entrypoint: main
+  arguments:
+    parameters:
+    - name: dataset
+      value: payments
+    - name: seconds-per-step
+      value: "60"
+  templates:
+  - name: main
+    dag:
+      tasks:
+      - {name: extract, templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: "{{workflow.parameters.dataset}}/extract"}, {name: seconds, value: "{{workflow.parameters.seconds-per-step}}"}]}}
+      - {name: validate, dependencies: [extract], templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: "{{workflow.parameters.dataset}}/validate"}, {name: seconds, value: "{{workflow.parameters.seconds-per-step}}"}]}}
+      - {name: profile, dependencies: [extract], templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: "{{workflow.parameters.dataset}}/profile"}, {name: seconds, value: "{{workflow.parameters.seconds-per-step}}"}]}}
+      - {name: transform, dependencies: [validate], templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: "{{workflow.parameters.dataset}}/transform"}, {name: seconds, value: "{{workflow.parameters.seconds-per-step}}"}]}}
+      - {name: load, dependencies: [transform, profile], templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: "{{workflow.parameters.dataset}}/load"}, {name: seconds, value: "{{workflow.parameters.seconds-per-step}}"}]}}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: fan-out
+  namespace: argo
+  labels:
+    speed: minutes
+spec:
+  entrypoint: main
+  arguments:
+    parameters:
+    - name: seconds
+      value: "120"
+  templates:
+  - name: main
+    steps:
+    - - name: sync
+        templateRef: {name: dev-step, template: run}
+        arguments:
+          parameters:
+          - {name: label, value: "sync-{{item}}"}
+          - {name: seconds, value: "{{workflow.parameters.seconds}}"}
+        withItems: [eu-west, eu-central, us-east, us-west, ap-south, ap-east]
+    - - {name: merge, templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: merge}, {name: seconds, value: "15"}]}}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: nested-pipeline
+  namespace: argo
+  labels:
+    speed: minutes
+spec:
+  entrypoint: main
+  templates:
+  - name: main
+    steps:
+    - - {name: checks, templateRef: {name: quick-checks, template: main}}
+    - - {name: etl, template: mini-etl}
+  - name: mini-etl
+    dag:
+      tasks:
+      - {name: extract, templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: extract}, {name: seconds, value: "20"}]}}
+      - {name: transform, dependencies: [extract], templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: transform}, {name: seconds, value: "25"}]}}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: release-approval
+  namespace: argo
+  labels:
+    speed: waiting
+spec:
+  entrypoint: main
+  templates:
+  - name: main
+    steps:
+    - - {name: build, templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: build}, {name: seconds, value: "10"}]}}
+    - - {name: approve, template: approve}
+    - - {name: release, templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: release}, {name: seconds, value: "20"}]}}
+  - name: approve
+    suspend: {}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: long-running
+  namespace: argo
+  labels:
+    speed: long
+spec:
+  entrypoint: main
+  arguments:
+    parameters:
+    - name: minutes
+      value: "20"
+  templates:
+  - name: main
+    container:
+      image: busybox:1.36
+      command: [sh, -c]
+      args:
+      - |
+        total=$(({{workflow.parameters.minutes}} * 12))
+        for i in $(seq 1 "$total"); do
+          echo "heartbeat $i/$total, queue depth $((i * 7 % 50))"
+          sleep 5
+        done
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: flaky-job
+  namespace: argo
+  labels:
+    speed: minutes
+    team: payments
+spec:
+  entrypoint: main
+  templates:
+  - name: main
+    retryStrategy:
+      limit: "3"
+    container:
+      image: busybox:1.36
+      command: [sh, -c]
+      args:
+      - |
+        echo "calling payments API"
+        sleep 15
+        if [ $((RANDOM % 2)) -eq 0 ]; then echo "ERROR connection reset by peer" >&2; exit 1; fi
+        echo "ok"
+---
+apiVersion: argoproj.io/v1alpha1
+kind: WorkflowTemplate
+metadata:
+  name: always-fails
+  namespace: argo
+  labels:
+    speed: minutes
+    team: payments
+spec:
+  entrypoint: main
+  onExit: notify
+  templates:
+  - name: main
+    steps:
+    - - {name: backup, templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: backup}, {name: seconds, value: "10"}]}}
+    - - {name: migrate, templateRef: {name: dev-step, template: run}, arguments: {parameters: [{name: label, value: migrate}, {name: seconds, value: "20"}, {name: fail, value: "true"}]}}
+  - name: notify
+    container:
+      image: busybox:1.36
+      command: [sh, -c, "echo 'workflow finished with status {{workflow.status}}'"]
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: cluster-healthcheck
+  labels:
+    speed: quick
+spec:
+  entrypoint: main
+  templates:
+  - name: main
+    dag:
+      tasks:
+      - {name: dns, template: probe, arguments: {parameters: [{name: target, value: dns}]}}
+      - {name: api-server, template: probe, arguments: {parameters: [{name: target, value: api-server}]}}
+      - {name: storage, template: probe, arguments: {parameters: [{name: target, value: storage}]}}
+  - name: probe
+    inputs:
+      parameters:
+      - name: target
+    container:
+      image: busybox:1.36
+      command: [sh, -c, "echo 'probing {{inputs.parameters.target}}'; sleep 8; echo healthy"]
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: cluster-cleanup
+  labels:
+    speed: minutes
+spec:
+  entrypoint: main
+  arguments:
+    parameters:
+    - name: older-than-days
+      value: "7"
+      description: Delete artifacts older than this
+  templates:
+  - name: main
+    container:
+      image: busybox:1.36
+      command: [sh, -c]
+      args:
+      - |
+        for bucket in logs artifacts cache tmp; do
+          echo "deleting $bucket older than {{workflow.parameters.older-than-days}} days"
+          sleep 10
+        done
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: heartbeat
+  namespace: argo
+spec:
+  schedules: ["*/2 * * * *"]
+  concurrencyPolicy: Replace
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  workflowSpec:
+    workflowTemplateRef:
+      name: quick-hello
+    arguments:
+      parameters:
+      - {name: message, value: heartbeat}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: flaky-every-5m
+  namespace: argo
+spec:
+  schedules: ["*/5 * * * *"]
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  workflowSpec:
+    workflowTemplateRef:
+      name: flaky-job
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: etl-every-10m
+  namespace: argo
+spec:
+  schedules: ["*/10 * * * *"]
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 2
+  failedJobsHistoryLimit: 2
+  workflowSpec:
+    workflowTemplateRef:
+      name: etl-pipeline
+    arguments:
+      parameters:
+      - {name: seconds-per-step, value: "20"}
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: nightly-cleanup
+  namespace: argo
+spec:
+  schedules: ["0 2 * * *"]
+  workflowSpec:
+    workflowTemplateRef:
+      name: cluster-cleanup
+      clusterScope: true
+---
+apiVersion: argoproj.io/v1alpha1
+kind: CronWorkflow
+metadata:
+  name: weekly-report
+  namespace: argo
+spec:
+  schedules: ["0 9 * * 1"]
+  suspend: true
+  workflowSpec:
+    workflowTemplateRef:
+      name: quick-hello
+    arguments:
+      parameters:
+      - {name: message, value: weekly report}

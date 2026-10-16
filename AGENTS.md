@@ -7,10 +7,14 @@ Unit tests are not enough. Before you report a change as done, run it against th
 Never use the user's own kube contexts. They can be production.
 
 ```sh
-make dev-up    # kind cluster "argowt-dev" with Argo Workflows; safe to rerun
+make dev-up    # kind cluster "argowt-dev" with Argo Workflows and samples; safe to rerun
 make dev-run   # build and run argowt against it
+make dev-seed  # start the sample workflows again
+make dev-submit T=quick-hello P="message=hi"  # start a workflow from any template
 make dev-down  # delete the cluster and .dev/
 ```
+
+A fresh cluster starts with running workflows at different steps, and the templates and cron workflows in `dev/samples/templates.yaml`. Pick a template by how long it runs: `quick-hello` and `quick-checks` take about 15 s, `etl-pipeline` and `build-test-deploy` take minutes, `release-approval` waits on a suspend step, and `always-fails` and `flaky-job` fail.
 
 `dev/cluster.sh` keeps everything in `.dev/` (git-ignored): the kubeconfig, and argowt's state and config. Use the same isolation for direct `kubectl` calls:
 
