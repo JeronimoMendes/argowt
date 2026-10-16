@@ -10,6 +10,7 @@ import (
 	k8stesting "k8s.io/client-go/testing"
 )
 
+// TestPrepareWorkflowTemplateParameters checks template parameter defaults, required fields, and destination namespace.
 func TestPrepareWorkflowTemplateParameters(t *testing.T) {
 	template := &wfv1.WorkflowTemplate{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "argo", Name: "payments"},
@@ -34,6 +35,7 @@ func TestPrepareWorkflowTemplateParameters(t *testing.T) {
 	}
 }
 
+// TestSubmitCreatesWorkflowTemplateReference checks the template scope, namespace, and parameter values in the created workflow.
 func TestSubmitCreatesWorkflowTemplateReference(t *testing.T) {
 	client := argofake.NewSimpleClientset()
 	service := NewSubmissionService(client)
@@ -65,6 +67,7 @@ func TestSubmitCreatesWorkflowTemplateReference(t *testing.T) {
 	}
 }
 
+// TestSubmitRejectsMissingDestination checks that submission requires a destination namespace.
 func TestSubmitRejectsMissingDestination(t *testing.T) {
 	service := NewSubmissionService(argofake.NewSimpleClientset())
 	if _, err := service.Submit(context.Background(), SubmissionRequest{Source: SubmissionSource{Kind: SourceWorkflowTemplate, Name: "template"}}); err == nil {

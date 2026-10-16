@@ -18,6 +18,7 @@ type paletteCommand struct {
 	Shortcut string
 }
 
+// paletteCommands lists the commands available in the current view.
 func (model Model) paletteCommands() []paletteCommand {
 	commands := make([]paletteCommand, 0, 24)
 	for _, descriptor := range resources.Descriptors() {
@@ -98,6 +99,7 @@ func (model Model) paletteCommands() []paletteCommand {
 	return filtered
 }
 
+// executePaletteCommand dispatches a selected palette command to its model action.
 func (model Model) executePaletteCommand(command paletteCommand) (tea.Model, tea.Cmd) {
 	if strings.HasPrefix(command.ID, "resource:") {
 		descriptor, found := resources.Lookup(strings.TrimPrefix(command.ID, "resource:"))
@@ -176,6 +178,7 @@ func (model Model) executePaletteCommand(command paletteCommand) (tea.Model, tea
 	return model, nil
 }
 
+// actionCommands lists the workflow action menu command and individual operation shortcuts.
 func actionCommands() []paletteCommand {
 	commands := []paletteCommand{{ID: "actions", Title: "Workflow actions", Shortcut: "a"}}
 	for _, operation := range workflows.Operations() {

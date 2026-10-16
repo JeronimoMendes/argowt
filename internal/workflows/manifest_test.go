@@ -36,6 +36,7 @@ status:
   phase: Succeeded
 `
 
+// TestParseWorkflowManifestAcceptsOneWorkflow checks Workflow decoding and removal of server-owned identity and status.
 func TestParseWorkflowManifestAcceptsOneWorkflow(t *testing.T) {
 	workflow, err := ParseWorkflowManifest([]byte(helloManifest))
 	if err != nil {
@@ -49,6 +50,7 @@ func TestParseWorkflowManifestAcceptsOneWorkflow(t *testing.T) {
 	}
 }
 
+// TestParseWorkflowManifestRejectsOtherKindsAndDocuments checks rejection of empty, malformed, multiple, or unsupported documents.
 func TestParseWorkflowManifestRejectsOtherKindsAndDocuments(t *testing.T) {
 	cases := map[string]string{
 		"empty":           "# nothing here\n---\n",
@@ -69,6 +71,7 @@ func TestParseWorkflowManifestRejectsOtherKindsAndDocuments(t *testing.T) {
 	}
 }
 
+// TestLoadWorkflowManifestReadsFile checks local file loading and rejection of missing or oversized files.
 func TestLoadWorkflowManifestReadsFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hello.yaml")
 	if err := os.WriteFile(path, []byte(helloManifest), 0o600); err != nil {
@@ -89,6 +92,7 @@ func TestLoadWorkflowManifestReadsFile(t *testing.T) {
 	}
 }
 
+// TestSubmitLocalManifestOverridesParameters checks namespace and parameter overrides without mutating the prepared manifest.
 func TestSubmitLocalManifestOverridesParameters(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "hello.yaml")
 	if err := os.WriteFile(path, []byte(helloManifest), 0o600); err != nil {
@@ -122,6 +126,7 @@ func TestSubmitLocalManifestOverridesParameters(t *testing.T) {
 	}
 }
 
+// TestResubmitFormKeepsWorkflowIdentity checks recreated workflow rejection and resubmission defaults for the expected UID.
 func TestResubmitFormKeepsWorkflowIdentity(t *testing.T) {
 	workflow := &wfv1.Workflow{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "argo", Name: "etl-abc", UID: "uid-1"},

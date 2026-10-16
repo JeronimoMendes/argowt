@@ -118,6 +118,7 @@ type accessReviewer struct {
 	reviewer kube.AccessReviewer
 }
 
+// Allowed adapts a workflow permission to the Kubernetes access reviewer.
 func (adapter accessReviewer) Allowed(ctx context.Context, namespace string, access workflows.Access) (bool, error) {
 	return adapter.reviewer.Allowed(ctx, namespace, access.Group, access.Resource, access.Verb)
 }
@@ -434,6 +435,7 @@ type nodePreviewEventMessage struct {
 	open       bool
 }
 
+// NewModel initializes the terminal UI state and services from the supplied options.
 func NewModel(options ModelOptions) Model {
 	workflowDescriptor, _ := resources.Lookup("workflows")
 	available := make(map[resources.Kind]bool)
@@ -599,6 +601,7 @@ func loadDetail(ctx context.Context, repository ResourceRepository, generation u
 	}
 }
 
+// Update applies asynchronous results and user input to the model and schedules follow-up commands.
 func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
 	case snapshotMessage:
@@ -871,6 +874,7 @@ func (model Model) updateMouse(mouse tea.MouseMsg) (tea.Model, tea.Cmd) {
 	return model, nil
 }
 
+// updateKey routes keyboard input to the active dialog, view, or resource list.
 func (model Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if model.palette {
 		return model.updatePaletteKey(key)
@@ -1131,6 +1135,7 @@ func (model Model) updateNotificationConfigKey(key tea.KeyMsg) (tea.Model, tea.C
 	return model, nil
 }
 
+// openTemplateSubmission loads a submission form for the selected workflow template.
 func (model Model) openTemplateSubmission() (tea.Model, tea.Cmd) {
 	if model.submissionService == nil || (model.resourceDescriptor.Kind != resources.WorkflowTemplates && model.resourceDescriptor.Kind != resources.ClusterWorkflowTemplates) {
 		return model, nil
@@ -1166,6 +1171,7 @@ func (model Model) startSubmission(source workflows.SubmissionSource, destinatio
 	return model, prepareSubmission(model.rootContext, model.submissionService, source, destination)
 }
 
+// updateSubmissionKey handles path entry, parameter editing, cancellation, and submission confirmation.
 func (model Model) updateSubmissionKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch model.submissionStage {
 	case "path":
@@ -1418,6 +1424,7 @@ func (model Model) filteredResourceItems() []resources.Summary {
 	return items
 }
 
+// screen renders the active view at the current terminal width.
 func (model Model) screen() string {
 	width := model.viewWidth()
 	switch {
@@ -1545,6 +1552,7 @@ func (model Model) listPanel(width, rows int) string {
 	return theme.Panel(title, theme.Muted.Render(plural(count, "item")), lines, width, rows, true)
 }
 
+// submissionView renders manifest path entry, parameter editing, or submission confirmation and progress.
 func (model Model) submissionView(width int) string {
 	source := model.submissionForm.Source.Label()
 	top := theme.Header(width, "", label("context", model.context), label("submit from", source))

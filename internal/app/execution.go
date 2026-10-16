@@ -88,6 +88,7 @@ func (model Model) openTarget(target argourl.Target) (tea.Model, tea.Cmd) {
 	return model, tea.Batch(command, executionCommand)
 }
 
+// updateExecutionKey handles execution navigation, display modes, and workflow shortcuts.
 func (model Model) updateExecutionKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	selectedBefore := model.executionSelectedID
 	switch key.String() {
@@ -215,6 +216,7 @@ func (model Model) executionNodeIDs() []string {
 
 var executionModes = []string{"tree", "dag", "table"}
 
+// executionView renders workflow status, action outcomes, and execution panels.
 func (model Model) executionView(width int) string {
 	name := "workflow"
 	status := theme.Info.Render("◌ loading")

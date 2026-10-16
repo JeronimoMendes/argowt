@@ -142,6 +142,7 @@ func formulateRetry(workflow *wfv1.Workflow) (*wfv1.Workflow, []string, error) {
 	return retried, podNodeIDs, nil
 }
 
+// newRetryWorkflow copies a workflow and clears completion, shutdown, and node state for a new attempt.
 func newRetryWorkflow(workflow *wfv1.Workflow) *wfv1.Workflow {
 	retried := workflow.DeepCopy()
 	if retried.Labels == nil {
@@ -215,6 +216,7 @@ func requireNodeStatus(workflow *wfv1.Workflow) error {
 	return nil
 }
 
+// descendantSucceeded reports whether a descendant succeeded, excluding ignored nodes as success candidates.
 func descendantSucceeded(workflow *wfv1.Workflow, node wfv1.NodeStatus, ignored map[string]bool) bool {
 	for _, childID := range node.Children {
 		child, err := workflow.Status.Nodes.Get(childID)
@@ -234,6 +236,7 @@ type retryNode struct {
 	children []*retryNode
 }
 
+// newRetryDAG links workflow nodes to parents and children, rejecting missing parents or children.
 func newRetryDAG(workflow *wfv1.Workflow) ([]*retryNode, error) {
 	nodes := make(map[string]*retryNode, len(workflow.Status.Nodes))
 	parents := make(map[string]string)
@@ -290,6 +293,8 @@ func sortedRetryDAG(nodes []*retryNode, rootName string) ([]*retryNode, error) {
 	return sorted, nil
 }
 
+// resetPath returns node ID sets to reset or delete when retrying the specified node.
+// It deletes descendants and resets enclosing groups, retry nodes, and boundaries.
 func resetPath(nodes []*retryNode, startID string) (map[string]bool, map[string]bool, error) {
 	var start *retryNode
 	for _, node := range nodes {
@@ -340,6 +345,7 @@ func resetPath(nodes []*retryNode, startID string) (map[string]bool, map[string]
 	return toReset, toDelete, nil
 }
 
+// resetBoundaries marks enclosing retry, step group, and boundary nodes for reset and returns the next ancestor.
 func resetBoundaries(node *retryNode, reset func(string)) (*retryNode, error) {
 	current := node
 	for current != nil {
@@ -363,6 +369,8 @@ func resetBoundaries(node *retryNode, reset func(string)) (*retryNode, error) {
 	return nil, nil
 }
 
+// resetUntil marks the first matching node on the path from node to the root and returns it.
+// It returns an error when no node on that path matches.
 func resetUntil(node *retryNode, match func(*retryNode) bool, reset func(string)) (*retryNode, error) {
 	for current := node; current != nil; current = current.parent {
 		if match(current) {
@@ -373,6 +381,7 @@ func resetUntil(node *retryNode, match func(*retryNode) bool, reset func(string)
 	return nil, fmt.Errorf("cannot retry: no matching ancestor of node %s", node.status.ID)
 }
 
+// descendants collects the IDs reachable through child edges, excluding the starting node in an acyclic graph.
 func descendants(node *retryNode) map[string]bool {
 	found := make(map[string]bool)
 	queue := []*retryNode{node}
@@ -390,6 +399,7 @@ func descendants(node *retryNode) map[string]bool {
 	return found
 }
 
+// resetNode clears a node's attempt state and resets supplied suspend outputs while preserving skipped status.
 func resetNode(node wfv1.NodeStatus) wfv1.NodeStatus {
 	// A suspend node waits for its supplied outputs again.
 	if node.Type == wfv1.NodeTypeSuspend && node.Outputs != nil {
@@ -410,14 +420,17 @@ func resetNode(node wfv1.NodeStatus) wfv1.NodeStatus {
 	return node
 }
 
+// isGroupNodeType reports whether the node type groups DAG tasks or workflow steps.
 func isGroupNodeType(nodeType wfv1.NodeType) bool {
 	return nodeType == wfv1.NodeTypeDAG || nodeType == wfv1.NodeTypeTaskGroup || nodeType == wfv1.NodeTypeStepGroup || nodeType == wfv1.NodeTypeSteps
 }
 
+// isExecutionNodeType reports whether the node type executes a container, pod, HTTP request, or plugin.
 func isExecutionNodeType(nodeType wfv1.NodeType) bool {
 	return nodeType == wfv1.NodeTypeContainer || nodeType == wfv1.NodeTypePod || nodeType == wfv1.NodeTypeHTTP || nodeType == wfv1.NodeTypePlugin
 }
 
+// mergeSet copies source entries whose keys are absent from target, preserving existing values.
 func mergeSet(target, source map[string]bool) {
 	for key, value := range source {
 		if _, found := target[key]; !found {

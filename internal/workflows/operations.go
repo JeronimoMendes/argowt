@@ -156,6 +156,7 @@ type OperationTarget struct {
 	SuspendNode     bool
 }
 
+// TargetFromSummary captures a workflow summary's identity, version, phase, and suspension state for an operation.
 func TargetFromSummary(summary Summary) OperationTarget {
 	return OperationTarget{
 		Namespace:       summary.Namespace,
@@ -168,6 +169,7 @@ func TargetFromSummary(summary Summary) OperationTarget {
 	}
 }
 
+// TargetFromExecution captures an execution view's identity, version, phase, and suspension state for an operation.
 func TargetFromExecution(execution Execution) OperationTarget {
 	return OperationTarget{
 		Namespace:       execution.Namespace,
@@ -180,6 +182,7 @@ func TargetFromExecution(execution Execution) OperationTarget {
 	}
 }
 
+// targetFromWorkflow normalizes a workflow into an operation target.
 func targetFromWorkflow(workflow *wfv1.Workflow) OperationTarget {
 	return TargetFromSummary(Normalize(workflow))
 }
@@ -189,6 +192,7 @@ func (target OperationTarget) DisplayPhase() string {
 	return Summary{Phase: target.Phase, Suspended: target.Suspended}.DisplayPhase()
 }
 
+// completed reports whether the target has a terminal workflow phase.
 func (target OperationTarget) completed() bool {
 	return !(Summary{Phase: target.Phase}).Active()
 }
@@ -232,10 +236,12 @@ type ConflictError struct {
 	Reason    string
 }
 
+// Error describes why the operation was refused and asks the user to review the current state.
 func (err *ConflictError) Error() string {
 	return fmt.Sprintf("%s not applied: %s/%s %s; review its current state and try again", err.Operation, err.Namespace, err.Name, err.Reason)
 }
 
+// IsConflict reports whether err contains a workflow operation ConflictError.
 func IsConflict(err error) bool {
 	var conflict *ConflictError
 	return errors.As(err, &conflict)
@@ -256,6 +262,7 @@ type OperationService struct {
 	now        func() time.Time
 }
 
+// NewOperationService creates a service using the supplied Argo and Kubernetes clients and the system clock.
 func NewOperationService(argo argoclient.Interface, kubernetes kubernetes.Interface) *OperationService {
 	return &OperationService{argo: argo, kubernetes: kubernetes, now: time.Now}
 }
@@ -324,6 +331,7 @@ func (service *OperationService) Run(ctx context.Context, operation Operation, t
 	return result, nil
 }
 
+// update writes the workflow with its resource version and returns any API error without retrying.
 func (service *OperationService) update(ctx context.Context, workflow *wfv1.Workflow) error {
 	_, err := service.argo.ArgoprojV1alpha1().Workflows(workflow.Namespace).Update(ctx, workflow, metav1.UpdateOptions{})
 	return err
@@ -383,6 +391,7 @@ func (service *OperationService) deleteNodePods(ctx context.Context, workflow *w
 	return deleted, nil
 }
 
+// ownedBy reports whether an owner reference has the given UID.
 func ownedBy(owners []metav1.OwnerReference, uid string) bool {
 	for _, owner := range owners {
 		if string(owner.UID) == uid {
@@ -419,6 +428,7 @@ func resumeWorkflow(workflow *wfv1.Workflow, now time.Time) error {
 	return nil
 }
 
+// describeState formats the target's phase and any waiting suspend step for conflict messages.
 func describeState(target OperationTarget) string {
 	state := target.DisplayPhase()
 	if target.SuspendNode && !target.Suspended {
@@ -427,6 +437,7 @@ func describeState(target OperationTarget) string {
 	return state
 }
 
+// displayWorkflowPhase returns the normalized workflow phase label for user-facing messages.
 func displayWorkflowPhase(workflow *wfv1.Workflow) string {
 	return Normalize(workflow).DisplayPhase()
 }

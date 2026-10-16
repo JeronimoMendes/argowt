@@ -20,12 +20,14 @@ type fakeOperationService struct {
 	err        error
 }
 
+// Run records the requested operation and target, then returns the configured error.
 func (service *fakeOperationService) Run(_ context.Context, operation workflows.Operation, target workflows.OperationTarget) (workflows.OperationResult, error) {
 	service.operations = append(service.operations, operation)
 	service.targets = append(service.targets, target)
 	return workflows.OperationResult{Operation: operation, Namespace: target.Namespace, Name: target.Name}, service.err
 }
 
+// key converts a test shortcut into a Bubble Tea key message.
 func key(text string) tea.KeyMsg {
 	switch text {
 	case "esc":
@@ -38,6 +40,7 @@ func key(text string) tea.KeyMsg {
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text)}
 }
 
+// press sends keys through the model and returns the final model and command.
 func press(t *testing.T, model Model, keys ...string) (Model, tea.Cmd) {
 	t.Helper()
 	var command tea.Cmd
@@ -49,6 +52,7 @@ func press(t *testing.T, model Model, keys ...string) (Model, tea.Cmd) {
 	return model, command
 }
 
+// actionModel creates a fresh workflow list model with delete permission denied by its access checker.
 func actionModel(service *fakeOperationService, items ...workflows.Summary) Model {
 	model := NewModel(ModelOptions{
 		Generation:       1,
@@ -65,10 +69,12 @@ func actionModel(service *fakeOperationService, items ...workflows.Summary) Mode
 	return model
 }
 
+// running returns a running workflow summary with a fixed identity and resource version.
 func running() workflows.Summary {
 	return workflows.Summary{Namespace: "argo", Name: "etl-abc", UID: "uid-1", ResourceVersion: "7", Phase: "Running"}
 }
 
+// TestActionMenuConfirmsWithContextAndRuns checks permission feedback, confirmation details, and the operation result notice.
 func TestActionMenuConfirmsWithContextAndRuns(t *testing.T) {
 	service := &fakeOperationService{}
 	model, command := press(t, actionModel(service, running()), "a")
@@ -106,6 +112,7 @@ func TestActionMenuConfirmsWithContextAndRuns(t *testing.T) {
 	}
 }
 
+// TestActionConfirmationCancelsAndIgnoresUnavailable checks that unavailable actions and cancellation never run operations.
 func TestActionConfirmationCancelsAndIgnoresUnavailable(t *testing.T) {
 	service := &fakeOperationService{}
 	model, command := press(t, actionModel(service, running()), "a")
@@ -129,6 +136,7 @@ func TestActionConfirmationCancelsAndIgnoresUnavailable(t *testing.T) {
 	}
 }
 
+// TestActionMenuIgnoresPastedText checks that coalesced or pasted action keys leave the menu open.
 func TestActionMenuIgnoresPastedText(t *testing.T) {
 	service := &fakeOperationService{}
 	model, _ := press(t, actionModel(service, running()), "a")
@@ -141,6 +149,7 @@ func TestActionMenuIgnoresPastedText(t *testing.T) {
 	}
 }
 
+// TestActionsDisabledWhileStale checks that reconnecting workflow data prevents action confirmation.
 func TestActionsDisabledWhileStale(t *testing.T) {
 	model := actionModel(&fakeOperationService{}, running())
 	model.connectionState = workflows.StateReconnecting
@@ -150,6 +159,7 @@ func TestActionsDisabledWhileStale(t *testing.T) {
 	}
 }
 
+// TestActionTargetIsCapturedAtConfirmation checks that later updates do not replace the confirmed workflow state.
 func TestActionTargetIsCapturedAtConfirmation(t *testing.T) {
 	service := &fakeOperationService{}
 	model, _ := press(t, actionModel(service, running()), "a")
@@ -170,6 +180,7 @@ func TestActionTargetIsCapturedAtConfirmation(t *testing.T) {
 	}
 }
 
+// TestOperationConflictAndForbiddenAreReported checks conflict feedback, no replay, and caching of runtime RBAC denials.
 func TestOperationConflictAndForbiddenAreReported(t *testing.T) {
 	service := &fakeOperationService{err: &workflows.ConflictError{Operation: workflows.OperationStop, Namespace: "argo", Name: "etl-abc", Reason: "changed from Running to Succeeded"}}
 	model, _ := press(t, actionModel(service, running()), "a", "x")
@@ -196,6 +207,7 @@ func TestOperationConflictAndForbiddenAreReported(t *testing.T) {
 	}
 }
 
+// TestResubmitOpensSubmissionForm checks that resubmission loads the selected workflow with its UID.
 func TestResubmitOpensSubmissionForm(t *testing.T) {
 	submissions := &fakeSubmissionService{result: workflows.SubmissionResult{Namespace: "argo", Name: "etl-def"}}
 	model := actionModel(&fakeOperationService{}, running())
@@ -212,6 +224,7 @@ func TestResubmitOpensSubmissionForm(t *testing.T) {
 	}
 }
 
+// TestLocalManifestSubmissionAsksForPath checks path entry, empty path rejection, and parameter form loading.
 func TestLocalManifestSubmissionAsksForPath(t *testing.T) {
 	submissions := &fakeSubmissionService{}
 	model := actionModel(&fakeOperationService{}, running())
@@ -236,6 +249,7 @@ func TestLocalManifestSubmissionAsksForPath(t *testing.T) {
 	}
 }
 
+// TestDeleteFromExecutionReturnsToList checks the deletion warning and return to the list after a successful delete.
 func TestDeleteFromExecutionReturnsToList(t *testing.T) {
 	service := &fakeOperationService{}
 	model := actionModel(service)
@@ -254,6 +268,7 @@ func TestDeleteFromExecutionReturnsToList(t *testing.T) {
 	}
 }
 
+// plain removes ANSI escapes from a rendered view for assertions.
 func plain(view string) string {
 	return ansi.Strip(view)
 }

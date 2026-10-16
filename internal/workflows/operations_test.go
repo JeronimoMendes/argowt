@@ -29,6 +29,7 @@ type recordingArgo struct {
 	writes *[]string
 }
 
+// ArgoprojV1alpha1 wraps the fake Argo API group to record workflow writes.
 func (client recordingArgo) ArgoprojV1alpha1() argov1.ArgoprojV1alpha1Interface {
 	return recordingGroup{client.Clientset.ArgoprojV1alpha1(), client.writes}
 }
@@ -38,6 +39,7 @@ type recordingGroup struct {
 	writes *[]string
 }
 
+// Workflows wraps the namespace client to record workflow updates and deletions.
 func (group recordingGroup) Workflows(namespace string) argov1.WorkflowInterface {
 	return recordingWorkflows{group.ArgoprojV1alpha1Interface.Workflows(namespace), group.writes}
 }
@@ -47,6 +49,7 @@ type recordingWorkflows struct {
 	writes *[]string
 }
 
+// Update records dry runs without persisting them and delegates real updates to the fake client.
 func (client recordingWorkflows) Update(ctx context.Context, workflow *wfv1.Workflow, options metav1.UpdateOptions) (*wfv1.Workflow, error) {
 	if len(options.DryRun) > 0 {
 		*client.writes = append(*client.writes, "dry-run update")
@@ -56,6 +59,7 @@ func (client recordingWorkflows) Update(ctx context.Context, workflow *wfv1.Work
 	return client.WorkflowInterface.Update(ctx, workflow, options)
 }
 
+// Delete records deletion preconditions before delegating to the fake client.
 func (client recordingWorkflows) Delete(ctx context.Context, name string, options metav1.DeleteOptions) error {
 	write := "delete"
 	if options.Preconditions != nil && options.Preconditions.UID != nil && options.Preconditions.ResourceVersion != nil {
@@ -67,6 +71,7 @@ func (client recordingWorkflows) Delete(ctx context.Context, name string, option
 
 var _ argoclient.Interface = recordingArgo{}
 
+// runningWorkflow returns a running workflow fixture with a fixed UID and resource version.
 func runningWorkflow() *wfv1.Workflow {
 	return &wfv1.Workflow{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "argo", Name: "etl", UID: "uid-1", ResourceVersion: "10"},
@@ -74,6 +79,7 @@ func runningWorkflow() *wfv1.Workflow {
 	}
 }
 
+// newOperationFixture creates an operation service with separate fake workflow and pod clients.
 func newOperationFixture(objects ...runtime.Object) (*OperationService, *argofake.Clientset, *kubefake.Clientset) {
 	var workflows, pods []runtime.Object
 	for _, object := range objects {
@@ -100,6 +106,7 @@ func newRecordingFixture(objects ...runtime.Object) (*OperationService, *argofak
 	return NewOperationService(recordingArgo{argo, writes}, kubernetes), argo, kubernetes, writes
 }
 
+// storedWorkflow reads the fixture workflow from the fake client, failing the test on error.
 func storedWorkflow(t *testing.T, client *argofake.Clientset) *wfv1.Workflow {
 	t.Helper()
 	workflow, err := client.ArgoprojV1alpha1().Workflows("argo").Get(context.Background(), "etl", metav1.GetOptions{})
@@ -109,6 +116,7 @@ func storedWorkflow(t *testing.T, client *argofake.Clientset) *wfv1.Workflow {
 	return workflow
 }
 
+// mutations filters out read actions from the fake Argo client's recorded calls.
 func mutations(client *argofake.Clientset) []k8stesting.Action {
 	var result []k8stesting.Action
 	for _, action := range client.Actions() {
@@ -119,6 +127,7 @@ func mutations(client *argofake.Clientset) []k8stesting.Action {
 	return result
 }
 
+// TestAvailabilityFollowsWorkflowState checks available operations and denial reasons across workflow states.
 func TestAvailabilityFollowsWorkflowState(t *testing.T) {
 	cases := []struct {
 		name      string
@@ -155,6 +164,7 @@ func TestAvailabilityFollowsWorkflowState(t *testing.T) {
 	}
 }
 
+// TestSuspendStopAndTerminateUpdateSpec checks the spec changes and result identity for each operation.
 func TestSuspendStopAndTerminateUpdateSpec(t *testing.T) {
 	cases := []struct {
 		operation Operation
@@ -182,6 +192,7 @@ func TestSuspendStopAndTerminateUpdateSpec(t *testing.T) {
 	}
 }
 
+// TestResumeClearsSuspendAndApprovesSuspendNodes checks that resume clears suspension and supplies default approval outputs.
 func TestResumeClearsSuspendAndApprovesSuspendNodes(t *testing.T) {
 	workflow := runningWorkflow()
 	workflow.Spec.Suspend = ptr.To(true)
@@ -207,6 +218,7 @@ func TestResumeClearsSuspendAndApprovesSuspendNodes(t *testing.T) {
 	}
 }
 
+// TestResumeRefusesSuspendNodeWithoutOutputDefault checks that missing approval output defaults prevent any workflow write.
 func TestResumeRefusesSuspendNodeWithoutOutputDefault(t *testing.T) {
 	workflow := runningWorkflow()
 	workflow.Status.Nodes = wfv1.Nodes{
@@ -221,6 +233,7 @@ func TestResumeRefusesSuspendNodeWithoutOutputDefault(t *testing.T) {
 	}
 }
 
+// TestDeleteUsesIdentityAndVersionPreconditions checks that deletion carries the workflow UID and resource version.
 func TestDeleteUsesIdentityAndVersionPreconditions(t *testing.T) {
 	workflow := runningWorkflow()
 	service, client, _, writes := newRecordingFixture(workflow)
@@ -235,6 +248,7 @@ func TestDeleteUsesIdentityAndVersionPreconditions(t *testing.T) {
 	}
 }
 
+// TestRunRejectsRecreatedWorkflow checks that a changed UID produces a conflict without mutation.
 func TestRunRejectsRecreatedWorkflow(t *testing.T) {
 	workflow := runningWorkflow()
 	service, client, _ := newOperationFixture(workflow)
@@ -249,6 +263,7 @@ func TestRunRejectsRecreatedWorkflow(t *testing.T) {
 	}
 }
 
+// TestRunRejectsMissingWorkflow checks that a missing workflow is reported as a conflict.
 func TestRunRejectsMissingWorkflow(t *testing.T) {
 	service, _, _ := newOperationFixture()
 	_, err := service.Run(context.Background(), OperationStop, TargetFromSummary(Normalize(runningWorkflow())))
@@ -257,6 +272,7 @@ func TestRunRejectsMissingWorkflow(t *testing.T) {
 	}
 }
 
+// TestRunRejectsPhaseChangeSinceConfirmation checks that a changed phase prevents mutation of the confirmed target.
 func TestRunRejectsPhaseChangeSinceConfirmation(t *testing.T) {
 	workflow := runningWorkflow()
 	target := TargetFromSummary(Normalize(workflow))
@@ -272,6 +288,7 @@ func TestRunRejectsPhaseChangeSinceConfirmation(t *testing.T) {
 	}
 }
 
+// TestRunAcceptsProgressWithoutStateChange checks that a newer version with the same operation state permits an update.
 func TestRunAcceptsProgressWithoutStateChange(t *testing.T) {
 	workflow := runningWorkflow()
 	target := TargetFromSummary(Normalize(workflow))
@@ -285,6 +302,7 @@ func TestRunAcceptsProgressWithoutStateChange(t *testing.T) {
 	}
 }
 
+// TestRunDoesNotReplayAfterAPIConflict checks that an API conflict produces exactly one update attempt.
 func TestRunDoesNotReplayAfterAPIConflict(t *testing.T) {
 	workflow := runningWorkflow()
 	service, client, _ := newOperationFixture(workflow)
@@ -302,6 +320,7 @@ func TestRunDoesNotReplayAfterAPIConflict(t *testing.T) {
 	}
 }
 
+// TestRunReportsForbidden checks that operation errors preserve Kubernetes forbidden status.
 func TestRunReportsForbidden(t *testing.T) {
 	workflow := runningWorkflow()
 	service, client, _ := newOperationFixture(workflow)
@@ -314,6 +333,7 @@ func TestRunReportsForbidden(t *testing.T) {
 	}
 }
 
+// failedStepsWorkflow returns a failed steps workflow with one successful pod and one failed pod.
 func failedStepsWorkflow() *wfv1.Workflow {
 	return &wfv1.Workflow{
 		ObjectMeta: metav1.ObjectMeta{Namespace: "argo", Name: "etl", UID: "uid-1", ResourceVersion: "10",
@@ -331,6 +351,7 @@ func failedStepsWorkflow() *wfv1.Workflow {
 	}
 }
 
+// workflowPod creates a pod fixture labeled and owned by the fixture workflow with a node annotation.
 func workflowPod(name, nodeID string) *corev1.Pod {
 	return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
 		Namespace:       "argo",
@@ -342,6 +363,7 @@ func workflowPod(name, nodeID string) *corev1.Pod {
 	}}
 }
 
+// TestRetryResetsFailedNodesAndDeletesTheirPods checks node resets, pod ownership filtering, and dry-run/delete/update ordering.
 func TestRetryResetsFailedNodesAndDeletesTheirPods(t *testing.T) {
 	workflow := failedStepsWorkflow()
 	stranger := workflowPod("etl-load-other", "load")
@@ -389,6 +411,7 @@ func TestRetryResetsFailedNodesAndDeletesTheirPods(t *testing.T) {
 	}
 }
 
+// TestRetryRefusesRunningAndCompressedWorkflows checks rejection of active workflows and unavailable compressed node status.
 func TestRetryRefusesRunningAndCompressedWorkflows(t *testing.T) {
 	if _, _, err := formulateRetry(runningWorkflow()); err == nil {
 		t.Fatal("formulateRetry() accepted a running workflow")
@@ -401,6 +424,7 @@ func TestRetryRefusesRunningAndCompressedWorkflows(t *testing.T) {
 	}
 }
 
+// TestRetryRerunsExitHandler checks that retry removes exit handler status and includes its pod for deletion.
 func TestRetryRerunsExitHandler(t *testing.T) {
 	workflow := failedStepsWorkflow()
 	workflow.Status.Nodes["exit"] = wfv1.NodeStatus{ID: "exit", Name: "etl.onExit", Type: wfv1.NodeTypePod, Phase: wfv1.NodeSucceeded}
@@ -416,6 +440,7 @@ func TestRetryRerunsExitHandler(t *testing.T) {
 	}
 }
 
+// TestResubmitCopiesSpecAndUserLabels checks that resubmission retains user data and clears completion and shutdown state.
 func TestResubmitCopiesSpecAndUserLabels(t *testing.T) {
 	workflow := failedStepsWorkflow()
 	workflow.GenerateName = "etl-"
@@ -445,6 +470,7 @@ func TestResubmitCopiesSpecAndUserLabels(t *testing.T) {
 
 type fakeReviewer map[Access]bool
 
+// Allowed returns a configured permission or an error when the permission has no configured answer.
 func (reviewer fakeReviewer) Allowed(_ context.Context, _ string, access Access) (bool, error) {
 	allowed, found := reviewer[access]
 	if !found {
@@ -453,6 +479,7 @@ func (reviewer fakeReviewer) Allowed(_ context.Context, _ string, access Access)
 	return allowed, nil
 }
 
+// TestCheckOperationsCombinesPermissions checks combined permission requirements and omission of unknown results.
 func TestCheckOperationsCombinesPermissions(t *testing.T) {
 	update := Access{Group: "argoproj.io", Resource: "workflows", Verb: "update"}
 	reviewer := fakeReviewer{

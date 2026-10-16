@@ -79,6 +79,8 @@ func NewSubmissionService(client argoclient.Interface) *SubmissionService {
 	return &SubmissionService{client: client}
 }
 
+// Prepare loads a template, existing workflow, or local manifest into a parameter form.
+// It resolves the destination namespace and rejects resubmission when the source UID changed.
 func (service *SubmissionService) Prepare(ctx context.Context, source SubmissionSource, destinationNamespace string) (SubmissionForm, error) {
 	form := SubmissionForm{Source: source}
 	var parameters []wfv1.Parameter
@@ -147,6 +149,7 @@ func (service *SubmissionService) Prepare(ctx context.Context, source Submission
 	return form, nil
 }
 
+// Submit creates a workflow from a template reference or prepared manifest with the requested parameters.
 func (service *SubmissionService) Submit(ctx context.Context, request SubmissionRequest) (SubmissionResult, error) {
 	if strings.TrimSpace(request.DestinationNamespace) == "" {
 		return SubmissionResult{}, fmt.Errorf("destination namespace is required")

@@ -89,6 +89,7 @@ func ParseWorkflowManifest(data []byte) (*wfv1.Workflow, error) {
 	return &workflow, nil
 }
 
+// hasContent reports whether a document contains a nonblank line that is not a YAML comment.
 func hasContent(document string) bool {
 	for _, line := range strings.Split(document, "\n") {
 		line = strings.TrimSpace(line)

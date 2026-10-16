@@ -39,12 +39,14 @@ type operationResultMessage struct {
 	err    error
 }
 
+// checkPermissions returns a command that checks namespace permissions and reports them to the model.
 func checkPermissions(ctx context.Context, check func(context.Context, string) map[workflows.Operation]bool, namespace string) tea.Cmd {
 	return func() tea.Msg {
 		return permissionMessage{namespace: namespace, allowed: check(ctx, namespace)}
 	}
 }
 
+// runOperation returns a command that applies an operation and reports its result to the model.
 func runOperation(ctx context.Context, service WorkflowOperationService, operation workflows.Operation, target workflows.OperationTarget) tea.Cmd {
 	return func() tea.Msg {
 		result, err := service.Run(ctx, operation, target)
@@ -87,6 +89,7 @@ func (model Model) liveActionTarget() workflows.OperationTarget {
 	return target
 }
 
+// openActions opens the selected workflow's action menu and requests any uncached permissions.
 func (model Model) openActions() (tea.Model, tea.Cmd) {
 	if model.operationService == nil {
 		return model, nil
@@ -152,6 +155,7 @@ func (model Model) operationAvailable(operation workflows.Operation) (bool, stri
 	return target.Available(operation)
 }
 
+// updateActionKey handles action menu navigation and confirmation, ignoring pasted or coalesced text.
 func (model Model) updateActionKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	operations := workflows.Operations()
 	// Pasted or coalesced text must never choose or confirm an action.
@@ -209,12 +213,15 @@ func (model Model) chooseAction(operation workflows.Operation) (tea.Model, tea.C
 	return model, nil
 }
 
+// closeActions hides the action menu and clears its current stage and operation.
 func (model *Model) closeActions() {
 	model.actionVisible = false
 	model.actionStage = ""
 	model.actionOperation = ""
 }
 
+// handleOperationResult displays the operation outcome and remembers RBAC denials.
+// It closes the execution view when its workflow was deleted successfully.
 func (model Model) handleOperationResult(message operationResultMessage) (tea.Model, tea.Cmd) {
 	model.closeActions()
 	target, result := message.target, message.result
@@ -243,6 +250,7 @@ func (model Model) handleOperationResult(message operationResultMessage) (tea.Mo
 	return model, nil
 }
 
+// openResubmission loads a submission form for the selected workflow and its captured UID.
 func (model Model) openResubmission(target workflows.OperationTarget) (tea.Model, tea.Cmd) {
 	if model.submissionService == nil {
 		return model, nil
@@ -251,6 +259,7 @@ func (model Model) openResubmission(target workflows.OperationTarget) (tea.Model
 	return model.startSubmission(source, target.Namespace)
 }
 
+// actionView renders the workflow action menu, confirmation, or operation progress.
 func (model Model) actionView(width int) string {
 	target := model.liveActionTarget()
 	top := theme.Header(width, theme.Status(target.DisplayPhase(), target.DisplayPhase()),
@@ -332,7 +341,7 @@ func (model Model) actionStatusLines() []string {
 	return lines
 }
 
-// localManifestPrompt opens the submission flow at the manifest path field.
+// openLocalSubmission opens the submission flow at the manifest path field.
 func (model Model) openLocalSubmission() (tea.Model, tea.Cmd) {
 	if model.submissionService == nil {
 		return model, nil
@@ -344,6 +353,7 @@ func (model Model) openLocalSubmission() (tea.Model, tea.Cmd) {
 	return model, nil
 }
 
+// updateSubmissionPathKey edits the local manifest path and loads its parameter form on Enter.
 func (model Model) updateSubmissionPathKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	path := model.submissionForm.Source.Path
 	switch key.String() {

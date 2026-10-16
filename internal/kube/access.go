@@ -14,6 +14,8 @@ type AccessReviewer struct {
 	Client kubernetes.Interface
 }
 
+// Allowed checks whether the current user may perform the verb on the resource in the namespace.
+// It returns API errors separately from permission denials.
 func (reviewer AccessReviewer) Allowed(ctx context.Context, namespace, group, resource, verb string) (bool, error) {
 	review, err := reviewer.Client.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authorizationv1.SelfSubjectAccessReview{
 		Spec: authorizationv1.SelfSubjectAccessReviewSpec{

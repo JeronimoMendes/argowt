@@ -180,6 +180,8 @@ func sendExecution(ctx context.Context, output chan<- ExecutionUpdate, update Ex
 	}
 }
 
+// NormalizeExecution copies workflow identity, state, and nodes into an execution view.
+// It preserves missing child references as unknown nodes and identifies graph roots.
 func NormalizeExecution(workflow *wfv1.Workflow) Execution {
 	if workflow == nil {
 		return Execution{Nodes: map[string]Node{}}

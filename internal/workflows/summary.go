@@ -30,6 +30,8 @@ type Summary struct {
 	Labels            map[string]string
 }
 
+// Normalize copies workflow identity, phase, suspension state, template, and labels into a summary.
+// A nil workflow produces an empty summary.
 func Normalize(workflow *wfv1.Workflow) Summary {
 	if workflow == nil {
 		return Summary{}
