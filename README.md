@@ -2,7 +2,7 @@
 
 `argowt` is a terminal user interface for monitoring and operating Argo Workflows.
 
-> **Status:** early implementation. Browsing, workflow visualization, live logs, notifications, and template submission are usable; lifecycle operations remain under development.
+> **Status:** early implementation. Browsing, workflow visualization, live logs, notifications, submission, and workflow lifecycle operations are usable.
 
 ## Current capabilities
 
@@ -19,11 +19,12 @@
 - Live workflow execution visualization with tree, DAG, and table modes plus node timing, messages, inputs, outputs, artifacts, retries, pod placement, and stable selection across views.
 - Live node pod logs with container and previous-attempt selection, follow/reconnect, timestamps, search, wrapping, scrolling, bounded memory, and explicit file saving.
 - Persistent UID-bound workflow notification watches, startup reconciliation, configurable transitions, in-TUI alerts, and graceful desktop-notification fallback.
-- Workflow submission from WorkflowTemplates and ClusterWorkflowTemplates with parameter forms and explicit context/namespace/source confirmation.
+- Workflow submission from WorkflowTemplates, ClusterWorkflowTemplates, existing workflows (resubmit), and local Workflow YAML files, with parameter forms and explicit context/namespace/source confirmation. Local files must hold exactly one `argoproj.io/v1alpha1` Workflow.
+- Retry, resubmit, suspend, resume, stop, terminate, and delete through the Kubernetes API, without the Argo server. Each action is confirmed with its context, namespace, workflow, UID, and phase; it is refused if the workflow was recreated or its phase changed since you confirmed, and never retried automatically. Actions your RBAC role does not allow are shown as unavailable.
 - Bounded reconnect backoff and resource-version recovery.
 - Cluster-free unit tests using narrow fake clients.
 
-Template submission is implemented. Retry, resubmit, suspend, resume, stop, terminate, delete, and local-YAML submission are not implemented yet.
+Retry and resume cannot rewrite node status that Argo has compressed or offloaded to its database; use the Argo CLI or UI for those workflows.
 
 ## Specifications
 
@@ -84,7 +85,7 @@ argowt 'https://argo.example.com/workflows/argo/hello?nodeId=hello-123'
 
 An Argo web UI URL opens its workflow (and node), template, cron workflow, event source, or sensor. The URL namespace becomes the scope unless `--namespace` or `--all-namespaces` is set. The kube context is not read from the URL; use `--context`.
 
-Inside the browser, use `j`/`k` or arrow keys to navigate, `:` to switch resource types, `/` to filter, `Enter` to open a workflow or resource, `n`/`N` to toggle/configure notifications, `s` to submit a selected template, `?` for help, and `q` to quit. Workflow execution views use `t`, `d`, and `l` for tree, DAG, and table modes; press `Enter` or `o` on a node for live pod logs.
+Inside the browser, use `j`/`k` or arrow keys to navigate, `:` to switch resource types, `/` to filter, `Enter` to open a workflow or resource, `n`/`N` to toggle/configure notifications, `a` to open the actions menu for the selected workflow (also in the execution view), `s` to submit a selected template, `S` to submit a local Workflow YAML file, `?` for help, and `q` to quit. Workflow execution views use `t`, `d`, and `l` for tree, DAG, and table modes; press `Enter` or `o` on a node for live pod logs.
 
 ```text
 argowt [flags] [URL]
