@@ -163,7 +163,7 @@ func TestActionTargetIsCapturedAtConfirmation(t *testing.T) {
 	finished.Phase = "Succeeded"
 	updated, _ = model.Update(snapshotMessage{open: true, snapshot: workflows.Snapshot{Generation: 1, State: workflows.StateFresh, Workflows: []workflows.Summary{finished}}})
 	model = updated.(Model)
-	model, command := press(t, model, "y")
+	_, command := press(t, model, "y")
 	command()
 	if service.targets[0].ResourceVersion != "8" || service.targets[0].Phase != "Running" {
 		t.Fatalf("target = %+v, want the state confirmed", service.targets[0])
