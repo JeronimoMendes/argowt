@@ -8,9 +8,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 
-	"argowt/internal/resources"
-	"argowt/internal/ui"
-	"argowt/internal/workflows"
+	"github.com/JeronimoMendes/argowt/internal/resources"
+	"github.com/JeronimoMendes/argowt/internal/ui"
+	"github.com/JeronimoMendes/argowt/internal/workflows"
 )
 
 type WorkflowOperationService interface {

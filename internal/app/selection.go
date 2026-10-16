@@ -3,7 +3,7 @@ package app
 import (
 	tea "github.com/charmbracelet/bubbletea"
 
-	"argowt/internal/ui"
+	"github.com/JeronimoMendes/argowt/internal/ui"
 )
 
 // View renders the screen with the mouse selection on top.

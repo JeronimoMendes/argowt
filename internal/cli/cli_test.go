@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"argowt/internal/app"
+	"github.com/JeronimoMendes/argowt/internal/app"
 )
 
 func TestHelpDoesNotStartApplicationOrResolvePaths(t *testing.T) {

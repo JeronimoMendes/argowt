@@ -10,18 +10,18 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"argowt/internal/argourl"
-	"argowt/internal/clipboard"
-	"argowt/internal/config"
-	"argowt/internal/filter"
-	"argowt/internal/kube"
-	applogs "argowt/internal/logs"
-	"argowt/internal/notify"
-	"argowt/internal/release"
-	"argowt/internal/resources"
-	"argowt/internal/ui"
-	"argowt/internal/version"
-	"argowt/internal/workflows"
+	"github.com/JeronimoMendes/argowt/internal/argourl"
+	"github.com/JeronimoMendes/argowt/internal/clipboard"
+	"github.com/JeronimoMendes/argowt/internal/config"
+	"github.com/JeronimoMendes/argowt/internal/filter"
+	"github.com/JeronimoMendes/argowt/internal/kube"
+	applogs "github.com/JeronimoMendes/argowt/internal/logs"
+	"github.com/JeronimoMendes/argowt/internal/notify"
+	"github.com/JeronimoMendes/argowt/internal/release"
+	"github.com/JeronimoMendes/argowt/internal/resources"
+	"github.com/JeronimoMendes/argowt/internal/ui"
+	"github.com/JeronimoMendes/argowt/internal/version"
+	"github.com/JeronimoMendes/argowt/internal/workflows"
 )
 
 var theme = ui.DefaultTheme()

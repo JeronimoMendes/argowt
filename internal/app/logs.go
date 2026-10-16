@@ -8,9 +8,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	applogs "argowt/internal/logs"
-	"argowt/internal/ui"
-	"argowt/internal/workflows"
+	applogs "github.com/JeronimoMendes/argowt/internal/logs"
+	"github.com/JeronimoMendes/argowt/internal/ui"
+	"github.com/JeronimoMendes/argowt/internal/workflows"
 )
 
 // Node log panel in the workflow view.

@@ -10,10 +10,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"argowt/internal/argourl"
-	"argowt/internal/resources"
-	"argowt/internal/ui"
-	"argowt/internal/workflows"
+	"github.com/JeronimoMendes/argowt/internal/argourl"
+	"github.com/JeronimoMendes/argowt/internal/resources"
+	"github.com/JeronimoMendes/argowt/internal/ui"
+	"github.com/JeronimoMendes/argowt/internal/workflows"
 )
 
 func (model Model) openWorkflowExecution() (tea.Model, tea.Cmd) {

@@ -3,7 +3,7 @@ package argourl
 import (
 	"testing"
 
-	"argowt/internal/resources"
+	"github.com/JeronimoMendes/argowt/internal/resources"
 )
 
 func TestParse(t *testing.T) {

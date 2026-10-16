@@ -11,7 +11,7 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	"argowt/internal/workflows"
+	"github.com/JeronimoMendes/argowt/internal/workflows"
 )
 
 type fakeOperationService struct {
