@@ -61,9 +61,17 @@ func SelectedText(view string, selection Selection, height int) string {
 	lines := strings.Split(ansi.Strip(view), "\n")
 	selected := make([]string, 0)
 	eachSelected(lines, selection, height, func(index, left, right int) {
-		selected = append(selected, strings.TrimRight(ansi.Cut(lines[index], left, right), " "))
+		selected = append(selected, trimBorder(ansi.Cut(lines[index], left, right)))
 	})
 	return strings.Join(selected, "\n")
+}
+
+// trimBorder drops panel borders, so a copy is only the text inside.
+// e.g. "│ argo  daily  │" returns "argo  daily".
+func trimBorder(line string) string {
+	line = strings.TrimRight(line, " ")
+	line = strings.TrimRight(strings.TrimSuffix(line, "│"), " ")
+	return strings.TrimPrefix(line, "│ ")
 }
 
 // eachSelected visits the view lines under the selection with their selected

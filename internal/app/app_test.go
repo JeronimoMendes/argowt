@@ -2,10 +2,12 @@ package app
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/ansi"
 
 	"argowt/internal/argourl"
 	applogs "argowt/internal/logs"
@@ -464,7 +466,7 @@ func TestSubmitWorkflowFromTemplateFormAndConfirmation(t *testing.T) {
 	}
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
 	model = updated.(Model)
-	if model.submissionStage != "confirm" || !strings.Contains(model.View(), "context:") {
+	if model.submissionStage != "confirm" || !strings.Contains(model.View(), "Confirm submission") {
 		t.Fatalf("confirmation view = %q", model.View())
 	}
 	updated, command = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
@@ -559,18 +561,34 @@ func TestMouseDragCopiesSelectedText(t *testing.T) {
 	}})
 	model.width, model.height = 100, 30
 
-	updated, _ := model.Update(tea.MouseMsg{X: 0, Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
-	updated, _ = updated.Update(tea.MouseMsg{X: 5, Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
+	// The logo badge pads "argowt" with one space.
+	updated, _ := model.Update(tea.MouseMsg{X: 1, Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	updated, _ = updated.Update(tea.MouseMsg{X: 6, Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionMotion})
 	if view := updated.View(); !strings.Contains(view, "\x1b[7margowt\x1b[27m") {
 		t.Fatalf("selection not highlighted: %q", view)
 	}
 
-	updated, command := updated.Update(tea.MouseMsg{X: 5, Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+	updated, command := updated.Update(tea.MouseMsg{X: 6, Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
 	if command == nil {
 		t.Fatal("release should copy the selection")
 	}
 	command()
 	if text := <-copied; text != "argowt" {
 		t.Fatalf("copied = %q", text)
+	}
+}
+
+func TestMouseClickSelectsRowUnderPointer(t *testing.T) {
+	model := NewModel(ModelOptions{Generation: 1})
+	model.width, model.height = 100, 30
+	model.connectionState = workflows.StateFresh
+	model.items = []workflows.Summary{{Namespace: "argo", Name: "first"}, {Namespace: "argo", Name: "second"}}
+
+	row := slices.IndexFunc(strings.Split(ansi.Strip(model.View()), "\n"), func(line string) bool {
+		return strings.Contains(line, "second")
+	})
+	updated, _ := model.Update(tea.MouseMsg{X: 10, Y: row, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	if cursor := updated.(Model).cursor; cursor != 1 {
+		t.Fatalf("cursor = %d, want 1", cursor)
 	}
 }

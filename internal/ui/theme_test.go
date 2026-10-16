@@ -27,3 +27,14 @@ func TestThemeKeepsTextualStatusAndSelection(t *testing.T) {
 		t.Fatalf("selected row = %q", rendered)
 	}
 }
+
+func TestKeysFitTheWidth(t *testing.T) {
+	theme := DefaultTheme()
+	pairs := []string{"j/k", "move", "Enter", "open", "q", "quit"}
+	if got := ansi.Strip(theme.Keys(20, pairs...)); got != " j/k move" {
+		t.Fatalf("Keys() = %q", got)
+	}
+	if got := ansi.Strip(theme.KeyLines(20, pairs...)); got != " j/k move\n Enter open   q quit" {
+		t.Fatalf("KeyLines() = %q", got)
+	}
+}

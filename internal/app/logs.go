@@ -258,10 +258,10 @@ func (model Model) updateLogKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		model.logOffset++
 	case "pgup":
 		model.logAutoScroll = false
-		model.logOffset += max(1, model.height-7)
+		model.logOffset += model.logPage()
 	case "pgdown":
 		model.logAutoScroll = false
-		model.logOffset = max(0, model.logOffset-max(1, model.height-7))
+		model.logOffset = max(0, model.logOffset-model.logPage())
 	case "G", "end":
 		model.logAutoScroll = true
 		model.logOffset = 0
@@ -302,7 +302,34 @@ func (model Model) updateLogKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (model Model) logView(width int) string {
-	var output strings.Builder
+	top, footer := model.logChrome(width)
+	return model.frame(top, footer, func(rows int) string {
+		inner := panelInner(width)
+		lines := model.visibleLogLines(inner)
+		visible := 20
+		if rows > 0 {
+			visible = max(1, rows-2)
+		}
+		offset := min(model.logOffset, max(0, len(lines)-visible))
+		start := max(0, len(lines)-visible-offset)
+		end := min(len(lines), start+visible)
+		body := make([]string, 0, end-start)
+		for _, line := range lines[start:end] {
+			if model.logQuery != "" && strings.Contains(strings.ToLower(line), strings.ToLower(model.logQuery)) {
+				line = theme.Warning.Render(ui.Truncate(line, inner))
+			}
+			body = append(body, line)
+		}
+		if len(lines) == 0 && model.logError == nil {
+			body = append(body, theme.Muted.Render("Waiting for log output…"))
+		}
+		title := theme.PanelTitle.Render("Logs")
+		return theme.Panel(title, theme.Muted.Render(plural(len(lines), "line")), body, width, rows, true)
+	})
+}
+
+// logChrome returns the lines above and below the log panel.
+func (model Model) logChrome(width int) (string, string) {
 	containerName := "discovering"
 	containerKind := ""
 	if len(model.logPod.Containers) > 0 && model.logContainer < len(model.logPod.Containers) {
@@ -314,85 +341,68 @@ func (model Model) logView(width int) string {
 	if model.logPrevious {
 		attempt = "previous"
 	}
-	fmt.Fprintf(&output, "%s  %s: %s  %s: %s  %s: %s  %s\n",
-		theme.Title.Render("argowt"),
-		theme.Muted.Render("pod"), theme.Accent.Render(ui.Sanitize(model.logPod.Name)),
-		theme.Muted.Render("container"), theme.Info.Render(ui.Sanitize(containerName)+" ("+containerKind+")"),
-		theme.Muted.Render("attempt"), theme.Info.Render(attempt),
-		theme.Status(model.logState, model.logState))
-	effectiveFollow := model.logFollow && !model.logPrevious
-	fmt.Fprintf(&output, "%s: %s  %s: %t  %s: %t  %s: %t\n",
-		theme.Muted.Render("node"), theme.Accent.Render(ui.Sanitize(model.logNode.Label())),
-		theme.Muted.Render("follow"), effectiveFollow,
-		theme.Muted.Render("timestamps"), model.logTimestamps,
-		theme.Muted.Render("wrap"), model.logWrap)
-	output.WriteString(theme.Muted.Render("c/Tab container · p previous · f follow · t timestamps · w wrap · / search · s save · r reconnect · : commands · Esc back") + "\n")
+	toggle := func(name string, on bool) string {
+		if on {
+			return theme.Success.Render("● " + name)
+		}
+		return theme.Muted.Render("○ " + name)
+	}
+	lines := []string{
+		theme.Header(width, theme.Status("● "+model.logState, model.logState),
+			label("pod", model.logPod.Name), label("container", containerName+" ("+containerKind+")"), label("attempt", attempt)),
+		" " + label("node", model.logNode.Label()) + "   " + toggle("follow", model.logFollow && !model.logPrevious) +
+			"  " + toggle("timestamps", model.logTimestamps) + "  " + toggle("wrap", model.logWrap),
+	}
 	if model.logError != nil {
-		output.WriteString(theme.Error.Render("! "+ui.Sanitize(model.logError.Error())) + "\n")
+		lines = append(lines, theme.Error.Render(" ! "+ui.Sanitize(model.logError.Error())))
 	}
 	if model.logNotice != "" {
-		output.WriteString(theme.Success.Render("✓ "+ui.Sanitize(model.logNotice)) + "\n")
+		lines = append(lines, theme.Success.Render(" ✓ "+ui.Sanitize(model.logNotice)))
 	}
 	if model.logBuffer != nil && model.logBuffer.Dropped() > 0 {
-		output.WriteString(theme.Warning.Render(fmt.Sprintf("! %d old log lines dropped to keep memory bounded", model.logBuffer.Dropped())) + "\n")
+		lines = append(lines, theme.Warning.Render(fmt.Sprintf(" ! %d old log lines dropped to keep memory bounded", model.logBuffer.Dropped())))
 	}
 	if model.logSearching || model.logQuery != "" {
-		output.WriteString(theme.ActiveInput.Render("search: /"+ui.Sanitize(model.logQuery)) + "\n")
+		lines = append(lines, theme.ActiveInput.Render(" / "+ui.Sanitize(model.logQuery)))
 	}
-	if model.logSaving {
-		output.WriteString(theme.ActiveInput.Render("save path: "+ui.Sanitize(model.logSavePath)) + "\n")
-		output.WriteString(theme.Muted.Render("Enter save · Esc cancel") + "\n")
+	for index := range lines {
+		lines[index] = ui.TruncateStyled(lines[index], width)
 	}
 
-	lines := model.visibleLogLines(width)
-	used := strings.Count(output.String(), "\n")
-	visible := model.height - used - 1
-	if visible < 1 || model.height == 0 {
-		visible = 20
+	footer := theme.Keys(width, "c/Tab", "container", "p", "previous", "f", "follow", "t", "timestamps", "w", "wrap", "/", "search", "s", "save", "r", "reconnect", ":", "commands", "Esc", "back")
+	if model.logSaving {
+		footer = theme.ActiveInput.Render(" save path: "+ui.Sanitize(model.logSavePath)+"▏") + "\n" + theme.Keys(width, "Enter", "save", "Esc", "cancel")
 	}
-	maximumOffset := max(0, len(lines)-visible)
-	offset := min(model.logOffset, maximumOffset)
-	start := max(0, len(lines)-visible-offset)
-	end := min(len(lines), start+visible)
-	output.WriteByte('\n')
-	for _, line := range lines[start:end] {
-		rendered := ui.Truncate(line, width)
-		if model.logQuery != "" && strings.Contains(strings.ToLower(line), strings.ToLower(model.logQuery)) {
-			rendered = theme.Warning.Render(rendered)
-		}
-		output.WriteString(rendered)
-		output.WriteByte('\n')
-	}
-	if len(lines) == 0 && model.logError == nil {
-		output.WriteString(theme.Muted.Render("Waiting for log output…") + "\n")
-	}
-	return output.String()
+	return strings.Join(lines, "\n"), footer
 }
 
-// nodeLogPanel renders the last log lines of the node, or why there are none.
-func (model Model) nodeLogPanel(node workflows.Node, width, limit int) string {
-	var message string
+// logPage is how many log lines a page scroll moves.
+func (model Model) logPage() int {
+	top, footer := model.logChrome(model.viewWidth())
+	return max(1, model.bodyRows(top, model.footer(footer))-2)
+}
+
+// nodeLogLines returns the last log lines of the node, or why there are none.
+func (model Model) nodeLogLines(node workflows.Node, width, limit int) []string {
 	switch {
 	case !hasPod(node):
-		return theme.Warning.Render(ui.Truncate(fmt.Sprintf("! %s is a %s node; it has no logs.", ui.Sanitize(node.DisplayName), ui.Sanitize(node.Type)), width)) + "\n"
+		return []string{theme.Warning.Render(fmt.Sprintf("! %s is a %s node; it has no logs.", ui.Sanitize(node.DisplayName), ui.Sanitize(node.Type)))}
 	case model.nodePreviewError != nil:
-		return theme.Error.Render(ui.Truncate("! logs unavailable: "+ui.Sanitize(model.nodePreviewError.Error()), width)) + "\n"
+		return []string{theme.Error.Render("! logs unavailable: " + ui.Sanitize(model.nodePreviewError.Error()))}
 	case model.nodePreviewBuffer != nil && model.nodePreviewBuffer.Len() > 0:
 		lines := model.nodePreviewBuffer.Lines()
 		lines = lines[max(0, len(lines)-limit):]
-		var output strings.Builder
-		for _, line := range lines {
-			output.WriteString(ui.Truncate(ui.Sanitize(line), width) + "\n")
+		for index, line := range lines {
+			lines[index] = ui.Truncate(ui.Sanitize(line), width)
 		}
-		return output.String()
+		return lines
 	case model.nodePreviewState == "ended":
-		message = "Log stream ended with no output."
+		return []string{theme.Muted.Render("Log stream ended with no output.")}
 	case model.nodePreviewState == "waiting":
-		message = "Stay on this node to load its logs…"
+		return []string{theme.Muted.Render("Stay on this node to load its logs…")}
 	default:
-		message = "Loading node logs…"
+		return []string{theme.Muted.Render("Loading node logs…")}
 	}
-	return theme.Muted.Render(message) + "\n"
 }
 
 func (model Model) visibleLogLines(width int) []string {

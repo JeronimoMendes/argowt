@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -203,98 +204,80 @@ func (model Model) executionNodeIDs() []string {
 	return ids
 }
 
+var executionModes = []string{"tree", "dag", "table"}
+
 func (model Model) executionView(width int) string {
-	var output strings.Builder
 	name := "workflow"
-	phase := "loading"
+	status := theme.Info.Render("◌ loading")
 	if model.execution != nil {
 		name = model.execution.Namespace + "/" + model.execution.Name
-		phase = model.execution.Phase
+		status = theme.Status(nodeStatus(model.execution.Phase), model.execution.Phase)
 	}
-	watchIndicator := ""
+	items := []string{label("context", model.context), label("workflow", name)}
 	if model.execution != nil && model.notificationManager != nil && model.notificationManager.IsWatched(model.execution.UID) {
-		watchIndicator = "  🔔 notifications on"
+		items = append(items, theme.Warning.Render("🔔 notifying"))
 	}
-	fmt.Fprintf(&output, "%s  %s: %s  %s: %s  %s: %s%s\n",
-		theme.Title.Render("argowt"), theme.Muted.Render("workflow"), theme.Accent.Render(ui.Sanitize(name)),
-		theme.Muted.Render("mode"), theme.Info.Render(model.executionMode),
-		theme.Muted.Render("phase"), theme.Status(ui.Sanitize(phase), phase), theme.Warning.Render(watchIndicator))
-	output.WriteString(theme.Muted.Render("t tree · d DAG · l table · Tab details/logs · j/k navigate · Enter/o live logs · n toggle notify · N configure · : commands · Esc back · q quit") + "\n")
+	lines := []string{theme.Header(width, status, items...)}
 	if model.executionStale {
-		output.WriteString(theme.Warning.Render("! execution data is stale; reconnecting") + "\n")
+		lines = append(lines, theme.Warning.Render(" ! execution data is stale; reconnecting"))
 	}
 	if model.executionError != nil {
-		fmt.Fprintf(&output, "%s\n", theme.Error.Render("! "+ui.Sanitize(model.executionError.Error())))
+		lines = append(lines, theme.Error.Render(" ! "+ui.Sanitize(model.executionError.Error())))
 	}
+	if model.execution != nil && model.execution.Message != "" {
+		lines = append(lines, theme.Muted.Render(" message ")+theme.Warning.Render(ui.Sanitize(model.execution.Message)))
+	}
+	for index := range lines {
+		lines[index] = ui.TruncateStyled(lines[index], width)
+	}
+	footer := theme.Keys(width, "j/k", "move", "t/d/l", "tree/DAG/table", "Tab", "details/logs", "Enter", "full logs", "n", "notify", "N", "configure", ":", "commands", "Esc", "back", "q", "quit")
+	return model.frame(strings.Join(lines, "\n"), footer, func(rows int) string {
+		return model.executionPanels(width, rows)
+	})
+}
+
+// executionPanels draws the node list over the selected node's details or logs.
+func (model Model) executionPanels(width, rows int) string {
+	inner := panelInner(width)
+	modeTabs := theme.PanelTitle.Render("Nodes") + "  " + theme.Tabs(executionModes, slices.Index(executionModes, model.executionMode))
 	if model.execution == nil {
-		output.WriteString("\n" + theme.Info.Render("◌ Loading workflow execution…") + "\n")
-		return output.String()
-	}
-	if model.execution.Message != "" {
-		fmt.Fprintf(&output, "%s %s\n", theme.Muted.Render("message:"), theme.Warning.Render(ui.Truncate(ui.Sanitize(model.execution.Message), max(1, width-9))))
+		return theme.Panel(modeTabs, "", []string{theme.Info.Render("◌ Loading workflow execution…")}, width, rows, true)
 	}
 	if len(model.execution.Nodes) == 0 {
-		output.WriteString("\nNo node status is available for this workflow.\n")
-		return output.String()
+		return theme.Panel(modeTabs, "", []string{"No node status is available for this workflow."}, width, rows, true)
 	}
 
-	listHeight := model.height * 3 / 5
-	if listHeight < 5 || model.height == 0 {
-		listHeight = 12
+	var header []string
+	if model.executionMode == "table" {
+		header = []string{theme.TableHeader.Render(fmt.Sprintf("  %-12s %-13s %-31s %s", "STATUS", "TYPE", "NODE", "DURATION"))}
 	}
-	listHeight -= strings.Count(output.String(), "\n")
-	if listHeight < 3 {
-		listHeight = 3
+	nodeLines := model.executionLines(inner)
+	listRows, detailRows := 0, 0
+	if rows > 0 {
+		listRows = min(len(header)+len(nodeLines)+2, max(3, rows/2))
+		detailRows = max(3, rows-listRows)
 	}
-	lines := model.executionLines(width)
-	start := 0
-	if model.executionCursor >= listHeight {
-		start = model.executionCursor - listHeight + 1
-	}
-	end := min(len(lines), start+listHeight)
-	output.WriteByte('\n')
-	if model.executionMode == "table" && width >= 65 {
-		output.WriteString(theme.TableHeader.Render("  STATUS       TYPE          NODE                            DURATION") + "\n")
-	}
-	for _, line := range lines[start:end] {
-		output.WriteString(line)
-		output.WriteByte('\n')
-	}
+	start, end := window(len(nodeLines), model.executionCursor, max(0, listRows-2-len(header)))
+	list := theme.Panel(modeTabs, theme.Muted.Render(plural(len(nodeLines), "node")), append(header, nodeLines[start:end]...), width, listRows, true)
 
 	node, found := model.execution.Nodes[model.executionSelectedID]
 	if !found {
-		return output.String()
+		return list
 	}
-
-	// The bottom panel shows the node details or its live logs. Tab switches.
-	title := "── Node details · Tab logs ──"
+	panel := 0
+	var body []string
 	if model.executionLogPanel {
-		title = "── Live logs · Tab details · Enter/o full view ──"
-	}
-	output.WriteString("\n" + theme.PanelTitle.Render(title) + "\n")
-	remaining := model.height - strings.Count(output.String(), "\n") - 1
-	if remaining < 1 || model.height == 0 {
-		remaining = nodePreviewTailLines
-	}
-	if model.executionLogPanel {
-		output.WriteString(model.nodeLogPanel(node, width, remaining))
-		return output.String()
-	}
-
-	detailLines := nodeDetailLines(node)
-	for index, line := range detailLines[:min(len(detailLines), remaining)] {
-		rendered := ui.Truncate(ui.Sanitize(line), width)
-		if index == 0 {
-			rendered = theme.Status(rendered, node.Phase)
-		} else if strings.HasPrefix(line, "message:") || strings.HasPrefix(line, "result:") {
-			rendered = theme.Warning.Render(rendered)
-		} else {
-			rendered = theme.Muted.Render(rendered)
+		panel = 1
+		limit := nodePreviewTailLines
+		if detailRows > 0 {
+			limit = detailRows - 2
 		}
-		output.WriteString(rendered)
-		output.WriteByte('\n')
+		body = model.nodeLogLines(node, inner, limit)
+	} else {
+		body = nodeDetailLines(node)
 	}
-	return output.String()
+	title := theme.Tabs([]string{"Node details", "Live logs"}, panel)
+	return list + "\n" + theme.Panel(title, theme.Muted.Render("Tab switch · Enter full logs"), body, width, detailRows, false)
 }
 
 func (model Model) executionLines(width int) []string {
@@ -302,40 +285,28 @@ func (model Model) executionLines(width int) []string {
 		return nil
 	}
 	now := time.Now()
-	switch model.executionMode {
-	case "table":
+	cursor := func(index int) string {
+		if index == model.executionCursor {
+			return "›"
+		}
+		return " "
+	}
+	if model.executionMode == "table" {
 		nodes := model.execution.TableNodes()
-		lines := []string{"  STATUS       TYPE          NODE                            DURATION"}
-		// The header isn't selectable; keep row indexing aligned by returning it
-		// separately would complicate viewport math, so omit it on narrow screens.
-		if width < 65 {
-			lines = lines[:0]
-		}
+		lines := make([]string, 0, len(nodes))
 		for index, node := range nodes {
-			prefix := " "
-			if index == model.executionCursor {
-				prefix = ">"
-			}
 			line := fmt.Sprintf("%s %-12s %-13s %-31s %s",
-				prefix, nodeStatus(node.Phase), node.Type, node.Label(), formatDuration(node.Duration(now)))
-			line = ui.Truncate(line, width)
-			if index == model.executionCursor {
-				line = theme.Row(line, true)
-			} else {
-				line = theme.Status(line, node.Phase)
-			}
-			lines = append(lines, line)
-		}
-		if width >= 65 {
-			// Remove the header to preserve cursor-to-line correspondence for the
-			// scrolling calculation; the columns remain self-explanatory in help.
-			return lines[1:]
+				cursor(index), nodeStatus(node.Phase), node.Type, node.Label(), formatDuration(node.Duration(now)))
+			lines = append(lines, styleRow(line, width, index == model.executionCursor, node.Phase))
 		}
 		return lines
-	case "dag":
-		rows := model.execution.TreeRows()
-		lines := make([]string, 0, len(rows))
-		for index, row := range rows {
+	}
+
+	rows := model.execution.TreeRows()
+	lines := make([]string, 0, len(rows))
+	for index, row := range rows {
+		var line string
+		if model.executionMode == "dag" {
 			children := make([]string, 0, len(row.Node.Children))
 			for _, childID := range row.Node.Children {
 				if child, found := model.execution.Nodes[childID]; found {
@@ -346,27 +317,8 @@ func (model Model) executionLines(width int) []string {
 			if len(children) > 0 {
 				edges = " → " + strings.Join(children, ", ")
 			}
-			prefix := " "
-			if index == model.executionCursor {
-				prefix = ">"
-			}
-			line := ui.Truncate(fmt.Sprintf("%s %s %s%s", prefix, nodeStatus(row.Node.Phase), row.Node.Label(), edges), width)
-			if index == model.executionCursor {
-				line = theme.Row(line, true)
-			} else {
-				line = theme.Status(line, row.Node.Phase)
-			}
-			lines = append(lines, line)
-		}
-		return lines
-	default:
-		rows := model.execution.TreeRows()
-		lines := make([]string, 0, len(rows))
-		for index, row := range rows {
-			prefix := " "
-			if index == model.executionCursor {
-				prefix = ">"
-			}
+			line = fmt.Sprintf("%s %-12s %s%s", cursor(index), nodeStatus(row.Node.Phase), row.Node.Label(), edges)
+		} else {
 			branch := strings.Repeat("  ", row.Depth)
 			if row.Depth > 0 {
 				branch += "└─"
@@ -375,58 +327,57 @@ func (model Model) executionLines(width int) []string {
 			if row.Cycle {
 				cycle = " [cycle]"
 			}
-			line := ui.Truncate(fmt.Sprintf("%s %s %s%s  (%s)%s",
-				prefix, nodeStatus(row.Node.Phase), branch, row.Node.Label(), row.Node.Type, cycle), width)
-			if index == model.executionCursor {
-				line = theme.Row(line, true)
-			} else {
-				line = theme.Status(line, row.Node.Phase)
-			}
-			lines = append(lines, line)
+			line = fmt.Sprintf("%s %-12s %s%s  (%s)%s", cursor(index), nodeStatus(row.Node.Phase), branch, row.Node.Label(), row.Node.Type, cycle)
 		}
-		return lines
+		lines = append(lines, styleRow(line, width, index == model.executionCursor, row.Node.Phase))
 	}
+	return lines
 }
 
+// nodeDetailLines lists the node fields as aligned name/value rows.
 func nodeDetailLines(node workflows.Node) []string {
 	lines := []string{
-		fmt.Sprintf("%s  phase=%s  type=%s  duration=%s", node.Label(), displayUnknown(node.Phase), displayUnknown(node.Type), formatDuration(node.Duration(time.Now()))),
+		field("node", ui.Sanitize(node.Label())),
+		field("phase", theme.Status(nodeStatus(node.Phase), node.Phase)) +
+			"   " + theme.Muted.Render("type") + " " + ui.Sanitize(displayUnknown(node.Type)) +
+			"   " + theme.Muted.Render("duration") + " " + formatDuration(node.Duration(time.Now())),
 	}
-	if node.Template != "" || node.TemplateRef != "" {
-		lines = append(lines, fmt.Sprintf("template=%s  templateRef=%s", node.Template, node.TemplateRef))
+	optional := []struct{ name, value string }{
+		{"template", node.Template},
+		{"templateRef", node.TemplateRef},
+		{"progress", node.Progress},
+		{"boundary", node.BoundaryID},
+		{"parents", strings.Join(node.Parents, ", ")},
+		{"children", strings.Join(node.Children, ", ")},
+		{"host node", node.HostNodeName},
+		{"pod IP", node.PodIP},
+		{"exit code", node.ExitCode},
 	}
-	if node.Progress != "" {
-		lines = append(lines, "progress="+node.Progress)
+	for _, item := range optional {
+		if item.value != "" {
+			lines = append(lines, field(item.name, ui.Sanitize(item.value)))
+		}
 	}
-	if node.Message != "" {
-		lines = append(lines, "message: "+node.Message)
+	if node.Retried {
+		lines = append(lines, field("retried", "yes"))
 	}
-	if node.Retried || node.Hooked {
-		lines = append(lines, fmt.Sprintf("retried=%t  hook=%t", node.Retried, node.Hooked))
-	}
-	if node.BoundaryID != "" {
-		lines = append(lines, "boundary="+node.BoundaryID)
-	}
-	if len(node.Parents) > 0 || len(node.Children) > 0 {
-		lines = append(lines, fmt.Sprintf("parents=%s  children=%s", strings.Join(node.Parents, ","), strings.Join(node.Children, ",")))
-	}
-	if node.HostNodeName != "" || node.PodIP != "" {
-		lines = append(lines, fmt.Sprintf("kubernetes node=%s  podIP=%s", node.HostNodeName, node.PodIP))
+	if node.Hooked {
+		lines = append(lines, field("hook", "yes"))
 	}
 	for _, input := range node.Inputs {
-		lines = append(lines, fmt.Sprintf("input %s=%s", input.Name, input.Value))
+		lines = append(lines, field("input", ui.Sanitize(input.Name+" = "+input.Value)))
 	}
 	for _, output := range node.Outputs {
-		lines = append(lines, fmt.Sprintf("output %s=%s", output.Name, output.Value))
+		lines = append(lines, field("output", ui.Sanitize(output.Name+" = "+output.Value)))
 	}
 	for _, artifact := range node.Artifacts {
-		lines = append(lines, fmt.Sprintf("%s artifact %s  path=%s  location=%s", artifact.Direction, artifact.Name, artifact.Path, artifact.Location))
+		lines = append(lines, field(ui.Sanitize(artifact.Direction+" artifact"), ui.Sanitize(fmt.Sprintf("%s  path=%s  location=%s", artifact.Name, artifact.Path, artifact.Location))))
 	}
-	if node.ExitCode != "" {
-		lines = append(lines, "exitCode="+node.ExitCode)
+	if node.Message != "" {
+		lines = append(lines, field("message", theme.Warning.Render(ui.Sanitize(node.Message))))
 	}
 	if node.Result != "" {
-		lines = append(lines, "result: "+node.Result)
+		lines = append(lines, field("result", theme.Warning.Render(ui.Sanitize(node.Result))))
 	}
 	return lines
 }

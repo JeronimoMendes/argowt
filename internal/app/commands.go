@@ -217,41 +217,28 @@ func (model Model) resourceTabs() string {
 	return strings.Join(parts, " ")
 }
 
-func (model Model) paletteView() string {
-	var output strings.Builder
-	output.WriteString("\n" + theme.PanelTitle.Render("Command palette") + "  " + theme.ActiveInput.Render(":"+ui.Sanitize(model.command)) + "\n")
+const paletteRows = 10
+
+func (model Model) paletteView(width int) string {
+	inner := panelInner(width)
+	lines := []string{theme.ActiveInput.Render(":" + ui.Sanitize(model.command) + "▏")}
 	commands := model.paletteCommands()
-	for index, command := range commands {
+	start, end := window(len(commands), model.paletteCursor, paletteRows)
+	for index := start; index < end; index++ {
+		command := commands[index]
+		selected := index == model.paletteCursor
 		cursor := " "
-		if index == model.paletteCursor {
-			cursor = ">"
+		if selected {
+			cursor = "›"
 		}
-		line := fmt.Sprintf("%s %-36s %s", cursor, command.Title, command.Shortcut)
-		output.WriteString(theme.Row(line, index == model.paletteCursor) + "\n")
+		line := fmt.Sprintf("%s %-44s %s", cursor, command.Title, command.Shortcut)
+		if selected {
+			line = theme.Row(ui.Pad(ui.Truncate(line, inner), inner), true)
+		}
+		lines = append(lines, line)
 	}
 	if len(commands) == 0 {
-		output.WriteString("  No matching command.\n")
+		lines = append(lines, theme.Muted.Render("  No matching command."))
 	}
-	output.WriteString(theme.Muted.Render("Enter run · Esc close") + "\n")
-	return output.String()
-}
-
-// withPalette draws the palette under a full-screen view.
-// The view is cut from the bottom so the palette fits the terminal height.
-func (model Model) withPalette(view string) string {
-	if !model.palette {
-		return view
-	}
-
-	palette := model.paletteView()
-	if model.height <= 0 {
-		return view + palette
-	}
-
-	lines := strings.Split(strings.TrimSuffix(view, "\n"), "\n")
-	room := max(1, model.height-strings.Count(palette, "\n")-1)
-	if len(lines) > room {
-		lines = lines[:room]
-	}
-	return strings.Join(lines, "\n") + "\n" + palette
+	return theme.Panel(theme.PanelTitle.Render("Command palette"), theme.Muted.Render("Enter run · Esc close"), lines, width, 0, true)
 }

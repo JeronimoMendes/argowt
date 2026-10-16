@@ -28,4 +28,9 @@ func TestSelectionSpansRowsAndKeepsStyling(t *testing.T) {
 	if got := SelectedText(view, Selection{Head: Point{X: 3}}, 3); got != "argo" {
 		t.Fatalf("SelectedText() on scrolled view = %q", got)
 	}
+
+	panel := "╭─ Logs ─────╮\n│   indented │\n│ last       │"
+	if got := SelectedText(panel, Selection{Anchor: Point{Y: 1}, Head: Point{X: 13, Y: 2}}, 0); got != "  indented\nlast" {
+		t.Fatalf("SelectedText() in panel = %q", got)
+	}
 }

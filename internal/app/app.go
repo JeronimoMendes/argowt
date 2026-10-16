@@ -810,23 +810,10 @@ func (model Model) updateMouse(mouse tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if mouse.Action != tea.MouseActionPress {
 			break
 		}
-		noticeLines := len(model.currentErrors())
-		if model.filterError != nil {
-			noticeLines++
-		}
-		if model.resourceNotice != "" {
-			noticeLines++
-		}
-		row := mouse.Y - (5 + noticeLines)
+		top, footer := model.listChrome(model.viewWidth())
+		row := mouse.Y - lineCount(top) - 1 - listHeaderRows
 		itemCount := model.itemCount()
-		visibleRows := model.height - (5 + noticeLines) - 3
-		if visibleRows < 1 || model.height == 0 {
-			visibleRows = itemCount
-		}
-		start := 0
-		if model.cursor >= visibleRows {
-			start = model.cursor - visibleRows + 1
-		}
+		start, _ := window(itemCount, model.cursor, listCapacity(model.bodyRows(top, model.footer(footer))))
 		index := start + row
 		if row >= 0 && index >= 0 && index < itemCount {
 			model.cursor = index
@@ -1365,146 +1352,197 @@ func (model Model) filteredResourceItems() []resources.Summary {
 }
 
 func (model Model) screen() string {
-	width := model.width
-	if width <= 0 {
-		width = 100
-	}
-	if model.logVisible {
-		return model.withPalette(model.logView(width))
-	}
-	if model.submissionVisible {
+	width := model.viewWidth()
+	switch {
+	case model.logVisible:
+		return model.logView(width)
+	case model.submissionVisible:
 		return model.submissionView(width)
-	}
-	if model.notificationConfig {
+	case model.notificationConfig:
 		return model.notificationConfigView(width)
+	case model.executionVisible:
+		return model.executionView(width)
+	case model.detailVisible:
+		return model.detailView(width)
 	}
-	if model.executionVisible {
-		return model.withPalette(model.executionView(width))
+	top, footer := model.listChrome(width)
+	return model.frame(top, footer, func(rows int) string {
+		return model.listPanel(width, rows)
+	})
+}
+
+// listChrome returns the lines above and below the resource list.
+func (model Model) listChrome(width int) (string, string) {
+	state := model.currentState()
+	tabs := " " + model.resourceTabs()
+	if model.query != "" && !model.filtering {
+		tabs += "   " + theme.ActiveInput.Render("/"+ui.Sanitize(model.query))
 	}
-	if model.detailVisible {
-		return model.withPalette(model.detailView(width))
+	lines := []string{
+		theme.Header(width, theme.Status("● "+state, state),
+			label("context", model.context), label("ns", model.namespace), label("instance", displayInstance(model.instanceID))),
+		tabs,
 	}
-	var output strings.Builder
-	fmt.Fprintf(&output, "%s  %s: %s  %s: %s  %s: %s  %s: %s\n",
-		theme.Title.Render("argowt"),
-		theme.Muted.Render("view"), theme.Accent.Render(ui.Sanitize(model.resourceDescriptor.Title)),
-		theme.Muted.Render("context"), theme.Info.Render(ui.Sanitize(model.context)),
-		theme.Muted.Render("namespaces"), theme.Info.Render(ui.Sanitize(model.namespace)),
-		theme.Muted.Render("instance"), theme.Info.Render(displayInstance(model.instanceID)))
-	output.WriteString(model.resourceTabs() + "  " + theme.Muted.Render("Tab/Shift+Tab switch") + "\n")
-	fmt.Fprintf(&output, "%s: %s", theme.Muted.Render("status"), theme.Status(model.currentState(), model.currentState()))
-	if model.query != "" || model.filtering {
-		fmt.Fprintf(&output, "  filter: /%s", ui.Sanitize(model.query))
-	}
-	output.WriteString("\n")
 	if model.notificationWarning != nil {
-		fmt.Fprintf(&output, "%s\n", theme.Error.Render("! notification: "+ui.Sanitize(model.notificationWarning.Error())))
+		lines = append(lines, theme.Error.Render(" ! notification: "+ui.Sanitize(model.notificationWarning.Error())))
 	}
 	if model.updateTag != "" {
-		fmt.Fprintf(&output, "%s\n", theme.Info.Render("↑ argowt "+ui.Sanitize(model.updateTag)+" available · run: argowt update"))
+		lines = append(lines, theme.Info.Render(" ↑ argowt "+ui.Sanitize(model.updateTag)+" available · run: argowt update"))
 	}
 	if len(model.notifications) > 0 {
 		latest := model.notifications[len(model.notifications)-1]
-		fmt.Fprintf(&output, "%s\n", theme.Warning.Render(fmt.Sprintf("🔔 %s/%s: %s → %s", ui.Sanitize(latest.Namespace), ui.Sanitize(latest.Name), ui.Sanitize(latest.From), ui.Sanitize(latest.To))))
+		lines = append(lines, theme.Warning.Render(fmt.Sprintf(" 🔔 %s/%s: %s → %s", ui.Sanitize(latest.Namespace), ui.Sanitize(latest.Name), ui.Sanitize(latest.From), ui.Sanitize(latest.To))))
 	}
 	if model.resourceNotice != "" {
-		fmt.Fprintf(&output, "%s\n", theme.Info.Render("◆ "+ui.Sanitize(model.resourceNotice)))
+		lines = append(lines, theme.Info.Render(" ◆ "+ui.Sanitize(model.resourceNotice)))
 	}
 	if model.filterError != nil {
-		fmt.Fprintf(&output, "%s\n", theme.Warning.Render("! filter: "+ui.Sanitize(model.filterError.Error())+" (previous valid filter remains active)"))
+		lines = append(lines, theme.Warning.Render(" ! filter: "+ui.Sanitize(model.filterError.Error())+" (previous valid filter remains active)"))
 	}
 	if currentError := model.currentError(); currentError != nil {
-		fmt.Fprintf(&output, "\n%s\n", theme.Error.Render("! "+ui.Sanitize(currentError.Error())))
+		lines = append(lines, theme.Error.Render(" ! "+ui.Sanitize(currentError.Error())))
 	}
 	for _, line := range scopeWarnings(model.currentErrors()) {
-		fmt.Fprintf(&output, "%s\n", theme.Warning.Render(ui.Truncate(ui.Sanitize(line), width)))
+		lines = append(lines, theme.Warning.Render(" "+ui.Sanitize(line)))
+	}
+	for index := range lines {
+		lines[index] = ui.TruncateStyled(lines[index], width)
 	}
 
-	output.WriteString("\n" + theme.TableHeader.Render("  STATUS        NAMESPACE           NAME                          AGE") + "\n")
+	var footer string
+	switch {
+	case model.filtering:
+		footer = theme.ActiveInput.Render(" / "+ui.Sanitize(model.query)+"▏") + "\n" +
+			theme.Keys(width, "Enter", "apply", "Esc", "cancel", "e.g.", "status=Running · namespace!=argo · age>10m · label:team=payments")
+	case model.showHelp:
+		footer = theme.KeyLines(width, "j/k ↑/↓", "move", "g/G", "first/last", "Enter", "open", "Tab/Shift+Tab", "resources",
+			"/", "filter", "Esc", "clear filter", "s", "submit template", "n", "toggle notify", "N", "configure notify",
+			":", "commands", "?", "hide help", "q", "quit") + "\n" +
+			theme.KeyLines(width, "filters", "fuzzy text · status=Running · namespace!=argo · age>10m · label:team=payments")
+	default:
+		footer = theme.Keys(width, "j/k", "move", "Enter", "open", "/", "filter", "?", "help", "q", "quit", "Tab", "resources", "s", "submit", "n", "notify", ":", "commands")
+	}
+	return strings.Join(lines, "\n"), footer
+}
+
+const listHeaderRows = 2
+
+// listCapacity is how many items fit in a list panel of the given height.
+func listCapacity(rows int) int {
+	if rows <= 0 {
+		return 0
+	}
+	return max(1, rows-2-listHeaderRows)
+}
+
+func (model Model) listPanel(width, rows int) string {
+	inner := panelInner(width)
+	nameWidth := min(max(29, inner-48), 60)
+	lines := []string{
+		theme.TableHeader.Render(ui.Truncate(fmt.Sprintf("  %-13s %-19s %-*s %s", "STATUS", "NAMESPACE", nameWidth, "NAME", "AGE"), inner)),
+		theme.Border.Render(strings.Repeat("─", inner)),
+	}
+	var count int
 	if model.resourceDescriptor.Kind == resources.Workflows {
-		model.renderWorkflows(&output, width)
+		items := model.filteredItems()
+		count = len(items)
+		start, end := window(count, model.cursor, listCapacity(rows))
+		for index := start; index < end; index++ {
+			item := items[index]
+			name := item.Name
+			if model.notificationManager != nil && model.notificationManager.IsWatched(item.UID) {
+				name = "🔔 " + name
+			}
+			lines = append(lines, listRow(inner, nameWidth, index == model.cursor, statusText(item), item.Namespace, name, item.CreationTimestamp))
+		}
+		if count == 0 && model.connectionState != workflows.StateLoading {
+			lines = append(lines, theme.Muted.Render("  No active workflows match the current scope."))
+		}
 	} else {
-		model.renderResources(&output, width)
+		items := model.filteredResourceItems()
+		count = len(items)
+		start, end := window(count, model.cursor, listCapacity(rows))
+		for index := start; index < end; index++ {
+			item := items[index]
+			lines = append(lines, listRow(inner, nameWidth, index == model.cursor, genericStatusText(item.Status), item.Namespace, item.Name, item.CreationTimestamp))
+		}
+		if count == 0 && model.resourceState != "loading" && model.resourceError == nil {
+			lines = append(lines, theme.Muted.Render("  No resources match the current scope."))
+		}
 	}
-
-	if model.palette {
-		output.WriteString(model.paletteView())
-	} else if model.showHelp {
-		output.WriteString("\n" + theme.PanelTitle.Render("Keyboard") + "\n")
-		output.WriteString(theme.Muted.Render("j/k or arrows · g/G first/last · Tab resources · Enter open · s submit template · n toggle notify · N configure · : commands · / filter · Esc clear · q quit · ? hide help") + "\n")
-		output.WriteString(theme.Muted.Render("Filters: fuzzy text · status=Running · namespace!=argo · age>10m · label:team=payments") + "\n")
-	} else if model.filtering {
-		output.WriteString("\n" + theme.ActiveInput.Render("Filter: /"+ui.Sanitize(model.query)) + "\n")
-		output.WriteString(theme.Muted.Render("Type to search · Enter apply · Esc cancel") + "\n")
-	} else {
-		output.WriteString("\n" + theme.Muted.Render("j/k navigate · Tab resources · Enter open · s submit · n notify · N configure · : commands · / filter · ? help · q quit") + "\n")
-	}
-	return output.String()
+	title := theme.PanelTitle.Render(model.resourceDescriptor.Title)
+	return theme.Panel(title, theme.Muted.Render(plural(count, "item")), lines, width, rows, true)
 }
 
 func (model Model) submissionView(width int) string {
-	var output strings.Builder
-	fmt.Fprintf(&output, "%s  %s %s/%s\n\n", theme.Title.Render("argowt"), theme.PanelTitle.Render("Submit workflow from"), sourceKind(model.submissionForm.Source), theme.Accent.Render(ui.Sanitize(model.submissionForm.Source.Name)))
+	source := sourceKind(model.submissionForm.Source) + "/" + model.submissionForm.Source.Name
+	top := theme.Header(width, "", label("context", model.context), label("submit from", source))
+	title := theme.PanelTitle.Render("Parameters")
+	var lines []string
+	var footer string
 	switch model.submissionStage {
 	case "loading":
-		output.WriteString(theme.Info.Render("◌ Loading template parameters…") + "\n\n" + theme.Muted.Render("Esc cancel") + "\n")
+		lines = []string{theme.Info.Render("◌ Loading template parameters…")}
+		footer = theme.Keys(width, "Esc", "cancel")
 	case "error":
-		fmt.Fprintf(&output, "%s\n\n%s\n", theme.Error.Render("! "+ui.Sanitize(model.submissionError.Error())), theme.Muted.Render("Enter/Esc close"))
+		lines = []string{theme.Error.Render("! " + ui.Sanitize(model.submissionError.Error()))}
+		footer = theme.Keys(width, "Enter/Esc", "close")
 	case "submitting":
-		output.WriteString(theme.Info.Render("◌ Submitting workflow…") + "\n")
+		lines = []string{theme.Info.Render("◌ Submitting workflow…")}
 	case "complete":
-		fmt.Fprintf(&output, "%s\n\n%s\n",
-			theme.Success.Render("✓ Submitted workflow "+ui.Sanitize(model.submissionResult.Namespace)+"/"+ui.Sanitize(model.submissionResult.Name)), theme.Muted.Render("Enter/Esc close"))
+		lines = []string{theme.Success.Render("✓ Submitted workflow " + ui.Sanitize(model.submissionResult.Namespace) + "/" + ui.Sanitize(model.submissionResult.Name))}
+		footer = theme.Keys(width, "Enter/Esc", "close")
 	case "confirm":
-		fmt.Fprintf(&output, "%s\n  context: %s\n  namespace: %s\n  source: %s/%s\n", theme.PanelTitle.Render("Confirm submission"),
-			ui.Sanitize(model.context), ui.Sanitize(model.submissionForm.DestinationNamespace), sourceKind(model.submissionForm.Source), ui.Sanitize(model.submissionForm.Source.Name))
+		title = theme.PanelTitle.Render("Confirm submission")
+		lines = []string{
+			field("context", ui.Sanitize(model.context)),
+			field("namespace", ui.Sanitize(model.submissionForm.DestinationNamespace)),
+			field("source", ui.Sanitize(source)),
+		}
 		for _, parameter := range model.submissionForm.Parameters {
-			fmt.Fprintf(&output, "  %s=%s\n", ui.Sanitize(parameter.Name), ui.Sanitize(model.submissionValues[parameter.Name]))
+			lines = append(lines, field(ui.Sanitize(parameter.Name), ui.Sanitize(model.submissionValues[parameter.Name])))
 		}
 		if model.submissionError != nil {
-			fmt.Fprintf(&output, "\n! %s\n", ui.Sanitize(model.submissionError.Error()))
+			lines = append(lines, "", theme.Error.Render("! "+ui.Sanitize(model.submissionError.Error())))
 		}
-		output.WriteString("\n" + theme.Muted.Render("y/Enter submit · n/Esc edit") + "\n")
+		footer = theme.Keys(width, "y/Enter", "submit", "n/Esc", "edit")
 	default:
-		fields := []struct {
-			name        string
-			value       string
-			description string
-			required    bool
-		}{{name: "destination namespace", value: model.submissionForm.DestinationNamespace, required: true}}
-		for _, parameter := range model.submissionForm.Parameters {
-			fields = append(fields, struct {
-				name        string
-				value       string
-				description string
-				required    bool
-			}{parameter.Name, model.submissionValues[parameter.Name], parameter.Description, parameter.Required})
+		type formField struct {
+			name, value, description string
+			required                 bool
 		}
+		fields := []formField{{name: "destination namespace", value: model.submissionForm.DestinationNamespace, required: true}}
+		for _, parameter := range model.submissionForm.Parameters {
+			fields = append(fields, formField{parameter.Name, model.submissionValues[parameter.Name], parameter.Description, parameter.Required})
+		}
+		inner := panelInner(width)
 		for index, field := range fields {
+			focused := index == model.submissionFocus
 			cursor := " "
-			if index == model.submissionFocus {
-				cursor = ">"
+			if focused {
+				cursor = "›"
 			}
 			required := ""
 			if field.required {
 				required = " *"
 			}
 			line := fmt.Sprintf("%s %s%s: %s", cursor, ui.Sanitize(field.name), required, ui.Sanitize(field.value))
-			output.WriteString(theme.Row(line, index == model.submissionFocus) + "\n")
+			if focused {
+				line = theme.Row(ui.Pad(ui.Truncate(line+"▏", inner), inner), true)
+			}
+			lines = append(lines, line)
 			if field.description != "" {
-				fmt.Fprintf(&output, "    %s\n", ui.Sanitize(field.description))
+				lines = append(lines, theme.Muted.Render("    "+ui.Sanitize(field.description)))
 			}
 		}
 		if model.submissionError != nil {
-			fmt.Fprintf(&output, "\n! %s\n", ui.Sanitize(model.submissionError.Error()))
+			lines = append(lines, "", theme.Error.Render("! "+ui.Sanitize(model.submissionError.Error())))
 		}
-		output.WriteString("\n" + theme.Muted.Render("Tab/↑/↓ fields · Enter next/confirm · Ctrl+S confirm · Esc cancel") + "\n")
+		footer = theme.Keys(width, "Tab/↑/↓", "fields", "Enter", "next/confirm", "Ctrl+S", "confirm", "Esc", "cancel")
 	}
-	lines := strings.Split(output.String(), "\n")
-	for index := range lines {
-		lines[index] = ui.TruncateStyled(lines[index], width)
-	}
-	return strings.Join(lines, "\n")
+	return model.frame(top, footer, func(rows int) string {
+		return theme.Panel(title, "", lines, width, rows, true)
+	})
 }
 
 func sourceKind(source workflows.SubmissionSource) string {
@@ -1516,66 +1554,74 @@ func sourceKind(source workflows.SubmissionSource) string {
 
 func (model Model) notificationConfigView(width int) string {
 	transitions := []string{"Running", "Suspended", "Succeeded", "Failed", "Error", "Terminated"}
-	var output strings.Builder
-	fmt.Fprintf(&output, "%s  %s %s\n\n", theme.Title.Render("argowt"), theme.PanelTitle.Render("Notification preferences"), theme.Accent.Render(ui.Sanitize(model.notificationName)))
-	output.WriteString(theme.TableHeader.Render("Choose transitions") + "\n")
+	top := theme.Header(width, "", label("context", model.context), label("notify", model.notificationName))
+	lines := []string{theme.TableHeader.Render("Notify when the workflow becomes")}
 	for index, transition := range transitions {
-		mark := " "
 		if model.notificationChoices[transition] {
-			mark = "x"
+			lines = append(lines, theme.Success.Render(fmt.Sprintf("  %d ● %s", index+1, transition)))
+		} else {
+			lines = append(lines, theme.Muted.Render(fmt.Sprintf("  %d ○ %s", index+1, transition)))
 		}
-		line := fmt.Sprintf("  %d [%s] %s", index+1, mark, transition)
-		if model.notificationChoices[transition] {
-			line = theme.Success.Render(line)
-		}
-		output.WriteString(line + "\n")
 	}
-	desktop := "off"
+	desktop := theme.Muted.Render("○ desktop notifications off")
 	if model.notificationDesktop {
-		desktop = "on (uses graceful no-op fallback when unavailable)"
+		desktop = theme.Success.Render("● desktop notifications on") + theme.Muted.Render(" (no-op when unavailable)")
 	}
-	fmt.Fprintf(&output, "\n  d desktop notifications: %s\n", desktop)
-	output.WriteString("\n" + theme.Muted.Render("1-6 toggle · d desktop · Enter save · Esc cancel") + "\n")
-	return output.String()
+	lines = append(lines, "", "  d "+desktop)
+	footer := theme.Keys(width, "1-6", "toggle", "d", "desktop", "Enter", "save", "Esc", "cancel")
+	return model.frame(top, footer, func(rows int) string {
+		return theme.Panel(theme.PanelTitle.Render("Notification preferences"), "", lines, width, rows, true)
+	})
 }
 
 func (model Model) detailView(width int) string {
-	var output strings.Builder
-	fmt.Fprintf(&output, "%s  %s %s  %s: %s\n", theme.Title.Render("argowt"), theme.PanelTitle.Render(model.resourceDescriptor.Title+" detail"), theme.Accent.Render(ui.Sanitize(model.detailUID)), theme.Muted.Render("context"), theme.Info.Render(ui.Sanitize(model.context)))
-	mode := "metadata"
+	name := model.detailUID
+	if model.detail != nil {
+		name = model.detail.Summary.Name
+	}
+	top := theme.Header(width, "", label("context", model.context), label(strings.ToLower(model.resourceDescriptor.Title), name))
+	footer := theme.Keys(width, "Tab/y", "metadata/YAML", "j/k", "scroll", ":", "commands", "Esc", "back", "q", "quit")
+	mode := 0
 	if model.detailYAML {
-		mode = "YAML"
+		mode = 1
 	}
-	fmt.Fprintf(&output, "%s: %s  %s\n\n", theme.Muted.Render("view"), theme.Accent.Render(mode), theme.Muted.Render("Tab/y toggle · j/k scroll · : commands · Esc back · q quit"))
-	if model.detailLoading {
-		output.WriteString(theme.Info.Render("◌ Loading resource details…") + "\n")
-		return output.String()
-	}
-	if model.detailError != nil {
-		fmt.Fprintf(&output, "%s\n", theme.Error.Render("! "+ui.Sanitize(model.detailError.Error())))
-		return output.String()
-	}
-	if model.detail == nil {
-		output.WriteString("No detail is available.\n")
-		return output.String()
-	}
-
-	lines := model.detailLines()
-	visible := model.height - 4
-	if visible < 1 || model.height == 0 {
-		visible = len(lines)
-	}
-	start := min(model.detailScroll, max(0, len(lines)-1))
-	end := min(len(lines), start+visible)
-	for _, line := range lines[start:end] {
-		rendered := ui.Truncate(ui.Sanitize(line), width)
-		if !model.detailYAML && strings.HasSuffix(line, ":") {
-			rendered = theme.PanelTitle.Render(rendered)
+	title := theme.Tabs([]string{"Metadata", "YAML"}, mode)
+	return model.frame(top, footer, func(rows int) string {
+		var lines []string
+		switch {
+		case model.detailLoading:
+			lines = []string{theme.Info.Render("◌ Loading resource details…")}
+		case model.detailError != nil:
+			lines = []string{theme.Error.Render("! " + ui.Sanitize(model.detailError.Error()))}
+		case model.detail == nil:
+			lines = []string{"No detail is available."}
+		default:
+			all := model.detailLines()
+			visible := len(all)
+			if rows > 0 {
+				visible = max(1, rows-2)
+			}
+			start := min(model.detailScroll, max(0, len(all)-1))
+			for _, line := range all[start:min(len(all), start+visible)] {
+				lines = append(lines, model.styleDetailLine(ui.Sanitize(line)))
+			}
 		}
-		output.WriteString(rendered)
-		output.WriteByte('\n')
+		return theme.Panel(title, "", lines, width, rows, true)
+	})
+}
+
+// styleDetailLine highlights section titles and the names in "Name: value".
+func (model Model) styleDetailLine(line string) string {
+	if model.detailYAML {
+		return line
 	}
-	return output.String()
+	if strings.HasSuffix(line, ":") {
+		return theme.PanelTitle.Render(line)
+	}
+	if name, value, found := strings.Cut(line, ": "); found && !strings.HasPrefix(line, " ") {
+		return theme.Muted.Render(name+":") + " " + value
+	}
+	return line
 }
 
 func (model Model) detailLines() []string {
@@ -1651,70 +1697,22 @@ func displayTime(value time.Time) string {
 	return value.Format(time.RFC3339)
 }
 
-func (model Model) renderWorkflows(output *strings.Builder, width int) {
-	items := model.filteredItems()
-	start, end := model.visibleRange(len(items), strings.Count(output.String(), "\n"))
-	for index := start; index < end; index++ {
-		item := items[index]
-		name := item.Name
-		if model.notificationManager != nil && model.notificationManager.IsWatched(item.UID) {
-			name = "🔔 " + name
-		}
-		renderRow(output, width, index == model.cursor, statusText(item), item.Namespace, name, item.CreationTimestamp)
-	}
-	if len(items) == 0 && model.connectionState != workflows.StateLoading {
-		output.WriteString("  No active workflows match the current scope.\n")
-	}
-}
-
-func (model Model) renderResources(output *strings.Builder, width int) {
-	items := model.filteredResourceItems()
-	start, end := model.visibleRange(len(items), strings.Count(output.String(), "\n"))
-	for index := start; index < end; index++ {
-		item := items[index]
-		renderRow(output, width, index == model.cursor, genericStatusText(item.Status), item.Namespace, item.Name, item.CreationTimestamp)
-	}
-	if len(items) == 0 && model.resourceState != "loading" && model.resourceError == nil {
-		output.WriteString("  No resources match the current scope.\n")
-	}
-}
-
-func (model Model) visibleRange(length, usedLines int) (int, int) {
-	visibleRows := model.height - usedLines - 3
-	if model.height == 0 {
-		visibleRows = length
-	}
-	visibleRows = max(1, visibleRows)
-	start := 0
-	if model.cursor >= visibleRows {
-		start = model.cursor - visibleRows + 1
-	}
-	return start, min(length, start+visibleRows)
-}
-
-func renderRow(output *strings.Builder, width int, selected bool, status, namespace, name string, created time.Time) {
+func listRow(width, nameWidth int, selected bool, status, namespace, name string, created time.Time) string {
 	cursor := " "
 	if selected {
-		cursor = ">"
+		cursor = "›"
 	}
 	if namespace == "" {
 		namespace = "—"
 	}
-	line := fmt.Sprintf("%s %-13s %-19s %-29s %s",
+	line := fmt.Sprintf("%s %-13s %-19s %-*s %s",
 		cursor,
 		ui.Truncate(ui.Sanitize(status), 13),
 		ui.Truncate(ui.Sanitize(namespace), 19),
-		ui.Truncate(ui.Sanitize(name), 29),
+		nameWidth, ui.Truncate(ui.Sanitize(name), nameWidth),
 		formatAge(created),
 	)
-	line = ui.Truncate(line, width)
-	if selected {
-		line = theme.Row(line, true)
-	} else {
-		line = theme.Status(line, status)
-	}
-	output.WriteString(line)
-	output.WriteByte('\n')
+	return styleRow(line, width, selected, status)
 }
 
 // scopeWarnings groups scopes by error, one line per error.

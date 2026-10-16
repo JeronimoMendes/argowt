@@ -26,6 +26,11 @@ type Theme struct {
 	ActiveInput   lipgloss.Style
 	InactiveInput lipgloss.Style
 	Key           lipgloss.Style
+	Logo          lipgloss.Style
+	Border        lipgloss.Style
+	BorderFocused lipgloss.Style
+	Tab           lipgloss.Style
+	TabActive     lipgloss.Style
 }
 
 func DefaultTheme() Theme {
@@ -38,6 +43,8 @@ func DefaultTheme() Theme {
 	yellow := lipgloss.AdaptiveColor{Light: "#8A5A00", Dark: "#FFD166"}
 	red := lipgloss.AdaptiveColor{Light: "#B42318", Dark: "#FF7B72"}
 	blue := lipgloss.AdaptiveColor{Light: "#175CD3", Dark: "#79B8FF"}
+	border := lipgloss.AdaptiveColor{Light: "#B8C2CC", Dark: "#3E4C59"}
+	onAccent := lipgloss.AdaptiveColor{Light: "#FFFFFF", Dark: "#0B1220"}
 
 	return Theme{
 		Title:         lipgloss.NewStyle().Bold(true).Foreground(primary),
@@ -56,6 +63,11 @@ func DefaultTheme() Theme {
 		ActiveInput:   lipgloss.NewStyle().Bold(true).Foreground(primary),
 		InactiveInput: lipgloss.NewStyle().Foreground(selectedForeground),
 		Key:           lipgloss.NewStyle().Bold(true).Foreground(secondary),
+		Logo:          lipgloss.NewStyle().Bold(true).Foreground(onAccent).Background(primary),
+		Border:        lipgloss.NewStyle().Foreground(border),
+		BorderFocused: lipgloss.NewStyle().Foreground(primary),
+		Tab:           lipgloss.NewStyle().Foreground(muted),
+		TabActive:     lipgloss.NewStyle().Bold(true).Foreground(onAccent).Background(secondary),
 	}
 }
 
