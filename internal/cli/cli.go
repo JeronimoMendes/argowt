@@ -11,11 +11,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"argowt/internal/app"
-	"argowt/internal/argourl"
-	"argowt/internal/config"
-	"argowt/internal/release"
-	"argowt/internal/version"
+	"github.com/JeronimoMendes/argowt/internal/app"
+	"github.com/JeronimoMendes/argowt/internal/argourl"
+	"github.com/JeronimoMendes/argowt/internal/config"
+	"github.com/JeronimoMendes/argowt/internal/release"
+	"github.com/JeronimoMendes/argowt/internal/version"
 )
 
 const helpText = `argowt monitors and operates Argo Workflows from the terminal.

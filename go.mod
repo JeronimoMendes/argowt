@@ -1,4 +1,4 @@
-module argowt
+module github.com/JeronimoMendes/argowt
 
 go 1.24.2
 

@@ -7,8 +7,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"argowt/internal/app"
-	"argowt/internal/cli"
+	"github.com/JeronimoMendes/argowt/internal/app"
+	"github.com/JeronimoMendes/argowt/internal/cli"
 )
 
 func main() {

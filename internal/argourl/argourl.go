@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"strings"
 
-	"argowt/internal/resources"
+	"github.com/JeronimoMendes/argowt/internal/resources"
 )
 
 // Query parameters the Argo UI sets on workflow links.

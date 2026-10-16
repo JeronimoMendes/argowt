@@ -9,11 +9,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
 
-	"argowt/internal/argourl"
-	applogs "argowt/internal/logs"
-	"argowt/internal/notify"
-	"argowt/internal/resources"
-	"argowt/internal/workflows"
+	"github.com/JeronimoMendes/argowt/internal/argourl"
+	applogs "github.com/JeronimoMendes/argowt/internal/logs"
+	"github.com/JeronimoMendes/argowt/internal/notify"
+	"github.com/JeronimoMendes/argowt/internal/resources"
+	"github.com/JeronimoMendes/argowt/internal/workflows"
 )
 
 func TestModelIgnoresObsoleteGeneration(t *testing.T) {

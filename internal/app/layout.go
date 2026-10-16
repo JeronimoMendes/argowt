@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"argowt/internal/ui"
+	"github.com/JeronimoMendes/argowt/internal/ui"
 )
 
 func (model Model) viewWidth() int {

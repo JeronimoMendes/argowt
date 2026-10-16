@@ -6,9 +6,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"argowt/internal/filter"
-	"argowt/internal/resources"
-	"argowt/internal/ui"
+	"github.com/JeronimoMendes/argowt/internal/filter"
+	"github.com/JeronimoMendes/argowt/internal/resources"
+	"github.com/JeronimoMendes/argowt/internal/ui"
 )
 
 type paletteCommand struct {

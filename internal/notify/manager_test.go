@@ -13,8 +13,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 
-	"argowt/internal/config"
-	"argowt/internal/workflows"
+	"github.com/JeronimoMendes/argowt/internal/config"
+	"github.com/JeronimoMendes/argowt/internal/workflows"
 )
 
 type fakeSource struct {

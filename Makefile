@@ -6,9 +6,9 @@ BUILD_DATE ?= unknown
 BINDIR ?= $(HOME)/.local/bin
 
 LDFLAGS := -s -w \
-	-X argowt/internal/version.Version=$(VERSION) \
-	-X argowt/internal/version.Commit=$(COMMIT) \
-	-X argowt/internal/version.Date=$(BUILD_DATE)
+	-X github.com/JeronimoMendes/argowt/internal/version.Version=$(VERSION) \
+	-X github.com/JeronimoMendes/argowt/internal/version.Commit=$(COMMIT) \
+	-X github.com/JeronimoMendes/argowt/internal/version.Date=$(BUILD_DATE)
 
 .PHONY: all build install fmt fmt-check test vet cross-build release-check clean dev-up dev-down dev-run dev-seed dev-submit
 
