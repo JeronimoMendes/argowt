@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -21,6 +22,9 @@ const (
 	WorkflowLabel      = "workflows.argoproj.io/workflow"
 	NodeIDAnnotation   = "workflows.argoproj.io/node-id"
 	NodeNameAnnotation = "workflows.argoproj.io/node-name"
+
+	streamBatchSize  = 32
+	streamFlushDelay = 50 * time.Millisecond
 )
 
 type Container struct {
@@ -104,28 +108,34 @@ func (service *Service) Stream(ctx context.Context, request Request) <-chan Even
 			}
 		}()
 
-		scanner := bufio.NewScanner(stream)
-		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
-		batch := make([]string, 0, 32)
-		flush := func() bool {
-			if len(batch) == 0 {
-				return true
+		// The scanner runs apart so a quiet followed stream still flushes the
+		// lines it has, instead of holding them until a batch fills.
+		lines := make(chan string, streamBatchSize)
+		var scanErr error
+		go func() {
+			defer close(lines)
+			scanner := bufio.NewScanner(stream)
+			scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+			for scanner.Scan() {
+				select {
+				case lines <- scanner.Text():
+				case <-ctx.Done():
+					return
+				}
 			}
-			copied := append([]string(nil), batch...)
-			batch = batch[:0]
-			return send(ctx, events, Event{Lines: copied})
-		}
-		for scanner.Scan() {
-			batch = append(batch, scanner.Text())
-			if len(batch) >= 32 && !flush() {
+			scanErr = scanner.Err()
+		}()
+		for {
+			batch, open := collectBatch(lines)
+			if len(batch) > 0 && !send(ctx, events, Event{Lines: batch}) {
 				return
 			}
+			if !open {
+				break
+			}
 		}
-		if !flush() {
-			return
-		}
-		if err := scanner.Err(); err != nil && ctx.Err() == nil {
-			send(ctx, events, Event{Err: fmt.Errorf("read pod logs: %w", err)})
+		if scanErr != nil && ctx.Err() == nil {
+			send(ctx, events, Event{Err: fmt.Errorf("read pod logs: %w", scanErr)})
 			return
 		}
 		if ctx.Err() == nil {
@@ -133,6 +143,30 @@ func (service *Service) Stream(ctx context.Context, request Request) <-chan Even
 		}
 	}()
 	return events
+}
+
+// collectBatch waits for a line, then takes the lines that follow within
+// streamFlushDelay, up to streamBatchSize. It reports false once lines is closed.
+func collectBatch(lines <-chan string) ([]string, bool) {
+	line, open := <-lines
+	if !open {
+		return nil, false
+	}
+	batch := append(make([]string, 0, streamBatchSize), line)
+	timer := time.NewTimer(streamFlushDelay)
+	defer timer.Stop()
+	for len(batch) < streamBatchSize {
+		select {
+		case line, open = <-lines:
+			if !open {
+				return batch, false
+			}
+			batch = append(batch, line)
+		case <-timer.C:
+			return batch, true
+		}
+	}
+	return batch, true
 }
 
 func (service *Service) openPodLog(ctx context.Context, request Request) (io.ReadCloser, error) {

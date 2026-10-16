@@ -208,7 +208,7 @@ func (model Model) updateLogKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				model.logSavePath = string(path[:len(path)-1])
 			}
 		default:
-			if key.Type == tea.KeyRunes {
+			if key.Type == tea.KeyRunes || key.Type == tea.KeySpace {
 				model.logSavePath += string(key.Runes)
 			}
 		}
@@ -227,7 +227,7 @@ func (model Model) updateLogKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				model.logQuery = string(query[:len(query)-1])
 			}
 		default:
-			if key.Type == tea.KeyRunes {
+			if key.Type == tea.KeyRunes || key.Type == tea.KeySpace {
 				model.logQuery += string(key.Runes)
 			}
 		}

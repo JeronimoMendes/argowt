@@ -914,7 +914,7 @@ func (model Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				model.cursor = 0
 			}
 		default:
-			if key.Type == tea.KeyRunes {
+			if key.Type == tea.KeyRunes || key.Type == tea.KeySpace {
 				model.query += string(key.Runes)
 				model.updateFilter()
 				model.cursor = 0
@@ -1232,7 +1232,7 @@ func (model Model) updateSubmissionKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return value[:len(value)-1]
 		})
 	default:
-		if key.Type == tea.KeyRunes {
+		if key.Type == tea.KeyRunes || key.Type == tea.KeySpace {
 			addition := append([]rune(nil), key.Runes...)
 			model.editSubmissionValue(func(value []rune) []rune { return append(value, addition...) })
 		}
@@ -1304,7 +1304,7 @@ func (model Model) updatePaletteKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			model.paletteCursor = 0
 		}
 	default:
-		if key.Type == tea.KeyRunes {
+		if key.Type == tea.KeyRunes || key.Type == tea.KeySpace {
 			model.command += string(key.Runes)
 			model.paletteCursor = 0
 		}

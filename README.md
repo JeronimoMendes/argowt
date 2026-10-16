@@ -2,6 +2,8 @@
 
 `argowt` is a terminal user interface for monitoring and operating Argo Workflows.
 
+![argowt demo: browsing live workflows, the DAG and table views, live pod logs, submitting a template, a notification, and approving a suspended release](docs/demo.gif)
+
 > **Status:** early implementation. Browsing, workflow visualization, live logs, notifications, submission, and workflow lifecycle operations are usable.
 
 ## Current capabilities
@@ -66,6 +68,8 @@ make dev-down       # delete it
 ```
 
 The dev cluster comes with the templates, cluster templates, and cron workflows in `dev/samples/templates.yaml`, from 15-second checks to 30-minute jobs, plus a pipeline waiting on approval and jobs that fail or retry. A fresh cluster also starts the workflows in `dev/samples/workflows.yaml`.
+
+`docs/demo.tape` records `docs/demo.gif` with [vhs](https://github.com/charmbracelet/vhs) against the dev cluster: run `make build && vhs docs/demo.tape` a few minutes after `make dev-up` or `make dev-seed`.
 
 Ordinary tests do not load kubeconfig or contact Kubernetes. Disposable-cluster integration commands will be added with the isolated integration harness described in the test specification.
 
