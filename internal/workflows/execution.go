@@ -19,6 +19,8 @@ type Execution struct {
 	UID             string
 	ResourceVersion string
 	Phase           string
+	Suspended       bool
+	SuspendNode     bool
 	Message         string
 	Nodes           map[string]Node
 	Roots           []string
@@ -188,6 +190,8 @@ func NormalizeExecution(workflow *wfv1.Workflow) Execution {
 		UID:             string(workflow.UID),
 		ResourceVersion: workflow.ResourceVersion,
 		Phase:           string(workflow.Status.Phase),
+		Suspended:       workflow.Spec.Suspend != nil && *workflow.Spec.Suspend,
+		SuspendNode:     waitingOnSuspendNode(workflow),
 		Message:         workflow.Status.Message,
 		Nodes:           make(map[string]Node, len(workflow.Status.Nodes)),
 	}

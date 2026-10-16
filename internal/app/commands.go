@@ -9,6 +9,7 @@ import (
 	"argowt/internal/filter"
 	"argowt/internal/resources"
 	"argowt/internal/ui"
+	"argowt/internal/workflows"
 )
 
 type paletteCommand struct {
@@ -52,8 +53,9 @@ func (model Model) paletteCommands() []paletteCommand {
 			paletteCommand{ID: "execution.table", Title: "Workflow view: table", Shortcut: "l"},
 			paletteCommand{ID: "notify.toggle", Title: "Toggle workflow notifications", Shortcut: "n"},
 			paletteCommand{ID: "notify.configure", Title: "Configure workflow notifications", Shortcut: "N"},
-			paletteCommand{ID: "back", Title: "Back to resources", Shortcut: "Esc"},
 		)
+		commands = append(commands, actionCommands()...)
+		commands = append(commands, paletteCommand{ID: "back", Title: "Back to resources", Shortcut: "Esc"})
 	case model.detailVisible:
 		commands = append(commands,
 			paletteCommand{ID: "detail.yaml", Title: "Toggle metadata/YAML", Shortcut: "Tab / y"},
@@ -71,7 +73,9 @@ func (model Model) paletteCommands() []paletteCommand {
 				paletteCommand{ID: "notify.toggle", Title: "Toggle workflow notifications", Shortcut: "n"},
 				paletteCommand{ID: "notify.configure", Title: "Configure workflow notifications", Shortcut: "N"},
 			)
+			commands = append(commands, actionCommands()...)
 		}
+		commands = append(commands, paletteCommand{ID: "submit.file", Title: "Submit workflow from local YAML", Shortcut: "S"})
 		if model.resourceDescriptor.Kind == resources.WorkflowTemplates || model.resourceDescriptor.Kind == resources.ClusterWorkflowTemplates {
 			commands = append(commands, paletteCommand{ID: "submit", Title: "Submit selected template", Shortcut: "s"})
 		}
@@ -102,7 +106,20 @@ func (model Model) executePaletteCommand(command paletteCommand) (tea.Model, tea
 		}
 		return model.switchResource(descriptor)
 	}
+	if operation, found := strings.CutPrefix(command.ID, "action:"); found {
+		opened, openCommand := model.openActions()
+		model = opened.(Model)
+		if !model.actionVisible {
+			return model, openCommand
+		}
+		chosen, chooseCommand := model.chooseAction(workflows.Operation(operation))
+		return chosen, tea.Batch(openCommand, chooseCommand)
+	}
 	switch command.ID {
+	case "actions":
+		return model.openActions()
+	case "submit.file":
+		return model.openLocalSubmission()
 	case "resource.next":
 		return model.cycleResource(1)
 	case "resource.previous":
@@ -157,6 +174,18 @@ func (model Model) executePaletteCommand(command paletteCommand) (tea.Model, tea
 		model.resourceNotice = fmt.Sprintf("Unknown command %s", command.ID)
 	}
 	return model, nil
+}
+
+func actionCommands() []paletteCommand {
+	commands := []paletteCommand{{ID: "actions", Title: "Workflow actions", Shortcut: "a"}}
+	for _, operation := range workflows.Operations() {
+		commands = append(commands, paletteCommand{
+			ID:       "action:" + string(operation),
+			Title:    "Workflow: " + strings.ToLower(operation.Title()),
+			Shortcut: "a " + actionKeys[operation],
+		})
+	}
+	return commands
 }
 
 func (model Model) executeLogShortcut(shortcut string) (tea.Model, tea.Cmd) {

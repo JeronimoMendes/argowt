@@ -22,6 +22,7 @@ type Summary struct {
 	ResourceVersion   string
 	Phase             string
 	Suspended         bool
+	SuspendNode       bool
 	CreationTimestamp time.Time
 	StartedAt         time.Time
 	InstanceID        string
@@ -44,12 +45,23 @@ func Normalize(workflow *wfv1.Workflow) Summary {
 		ResourceVersion:   workflow.ResourceVersion,
 		Phase:             string(workflow.Status.Phase),
 		Suspended:         workflow.Spec.Suspend != nil && *workflow.Spec.Suspend,
+		SuspendNode:       waitingOnSuspendNode(workflow),
 		CreationTimestamp: workflow.CreationTimestamp.Time,
 		StartedAt:         workflow.Status.StartedAt.Time,
 		InstanceID:        workflow.Labels[ControllerInstanceIDLabel],
 		Template:          template,
 		Labels:            copyLabels(workflow.Labels),
 	}
+}
+
+// waitingOnSuspendNode reports a running suspend step, such as an approval.
+func waitingOnSuspendNode(workflow *wfv1.Workflow) bool {
+	for _, node := range workflow.Status.Nodes {
+		if node.IsActiveSuspendNode() {
+			return true
+		}
+	}
+	return false
 }
 
 func copyLabels(source map[string]string) map[string]string {

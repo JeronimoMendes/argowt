@@ -19,7 +19,7 @@ func TestPrepareWorkflowTemplateParameters(t *testing.T) {
 		}}},
 	}
 	service := NewSubmissionService(argofake.NewSimpleClientset(template))
-	form, err := service.Prepare(context.Background(), SubmissionSource{Namespace: "argo", Name: "payments"}, "")
+	form, err := service.Prepare(context.Background(), SubmissionSource{Kind: SourceWorkflowTemplate, Namespace: "argo", Name: "payments"}, "")
 	if err != nil {
 		t.Fatalf("Prepare() error = %v", err)
 	}
@@ -38,7 +38,7 @@ func TestSubmitCreatesWorkflowTemplateReference(t *testing.T) {
 	client := argofake.NewSimpleClientset()
 	service := NewSubmissionService(client)
 	_, err := service.Submit(context.Background(), SubmissionRequest{
-		Source:               SubmissionSource{Name: "global-template", Cluster: true},
+		Source:               SubmissionSource{Kind: SourceClusterWorkflowTemplate, Name: "global-template"},
 		DestinationNamespace: "jobs",
 		Parameters:           map[string]string{"message": "hello", "count": "3"},
 	})
@@ -67,7 +67,7 @@ func TestSubmitCreatesWorkflowTemplateReference(t *testing.T) {
 
 func TestSubmitRejectsMissingDestination(t *testing.T) {
 	service := NewSubmissionService(argofake.NewSimpleClientset())
-	if _, err := service.Submit(context.Background(), SubmissionRequest{Source: SubmissionSource{Name: "template"}}); err == nil {
+	if _, err := service.Submit(context.Background(), SubmissionRequest{Source: SubmissionSource{Kind: SourceWorkflowTemplate, Name: "template"}}); err == nil {
 		t.Fatal("Submit() expected an error")
 	}
 }

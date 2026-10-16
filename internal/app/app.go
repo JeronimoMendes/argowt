@@ -60,6 +60,8 @@ func Run(ctx context.Context, options Options) error {
 	repository := workflows.NewRepository(workflowSource, namespaceLister)
 	resourceRepository := resources.NewRepository(connection.Dynamic, connection.Kubernetes.Discovery(), namespaceLister)
 	submissionService := workflows.NewSubmissionService(connection.Argo)
+	operationService := workflows.NewOperationService(connection.Argo, connection.Kubernetes)
+	accessReviewer := accessReviewer{kube.AccessReviewer{Client: connection.Kubernetes}}
 	logService := applogs.NewService(connection.Kubernetes)
 	watchContext, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -93,11 +95,15 @@ func Run(ctx context.Context, options Options) error {
 		CurrentNamespace:    connection.DefaultNamespace,
 		NotificationManager: notificationManager,
 		SubmissionService:   submissionService,
-		LogService:          logService,
-		StartupWarning:      stateErr,
-		Clipboard:           clipboard.Copy,
-		Open:                options.Open,
-		CheckUpdate:         checkUpdate,
+		OperationService:    operationService,
+		CheckAccess: func(ctx context.Context, namespace string) map[workflows.Operation]bool {
+			return workflows.CheckOperations(ctx, accessReviewer, namespace)
+		},
+		LogService:     logService,
+		StartupWarning: stateErr,
+		Clipboard:      clipboard.Copy,
+		Open:           options.Open,
+		CheckUpdate:    checkUpdate,
 	})
 
 	_, err = tea.NewProgram(model, tea.WithContext(ctx), tea.WithAltScreen(), tea.WithMouseCellMotion()).Run()
@@ -105,6 +111,15 @@ func Run(ctx context.Context, options Options) error {
 		return fmt.Errorf("run terminal UI: %w", err)
 	}
 	return nil
+}
+
+// accessReviewer adapts SelfSubjectAccessReviews to workflow permissions.
+type accessReviewer struct {
+	reviewer kube.AccessReviewer
+}
+
+func (adapter accessReviewer) Allowed(ctx context.Context, namespace string, access workflows.Access) (bool, error) {
+	return adapter.reviewer.Allowed(ctx, namespace, access.Group, access.Resource, access.Verb)
 }
 
 func scopeLabel(options Options, defaultNamespace string) string {
@@ -175,6 +190,8 @@ type ModelOptions struct {
 	ExecutionRepository WorkflowExecutionRepository
 	NotificationManager NotificationManager
 	SubmissionService   TemplateSubmissionService
+	OperationService    WorkflowOperationService
+	CheckAccess         func(context.Context, string) map[workflows.Operation]bool
 	LogService          LogService
 	Clipboard           func(string) error
 	StartupWarning      error
@@ -258,6 +275,18 @@ type Model struct {
 	submissionResult         *workflows.SubmissionResult
 	pendingWorkflowNamespace string
 	pendingWorkflowName      string
+
+	operationService   WorkflowOperationService
+	checkAccess        func(context.Context, string) map[workflows.Operation]bool
+	permissions        map[string]map[workflows.Operation]bool
+	permissionsPending map[string]bool
+	actionVisible      bool
+	actionStage        string
+	actionTarget       workflows.OperationTarget
+	actionOperation    workflows.Operation
+	actionCursor       int
+	actionNotice       string
+	actionError        error
 
 	logService          LogService
 	logVisible          bool
@@ -436,6 +465,9 @@ func NewModel(options ModelOptions) Model {
 		notificationWarnings: notificationWarnings,
 		notificationWarning:  options.StartupWarning,
 		submissionService:    options.SubmissionService,
+		operationService:     options.OperationService,
+		checkAccess:          options.CheckAccess,
+		permissions:          make(map[string]map[workflows.Operation]bool),
 		logService:           options.LogService,
 		clipboard:            options.Clipboard,
 		logFollow:            true,
@@ -663,8 +695,22 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case notificationWarningMessage:
 		model.notificationWarning = message.err
 		return model, waitForNotificationWarning(message.warnings)
+	case permissionMessage:
+		delete(model.permissionsPending, message.namespace)
+		model.permissions[message.namespace] = message.allowed
+		return model, nil
+	case operationResultMessage:
+		return model.handleOperationResult(message)
 	case submissionFormMessage:
+		if !model.submissionVisible {
+			return model, nil
+		}
 		model.submissionError = message.err
+		if message.err != nil && model.submissionForm.Source.Kind == workflows.SourceFile {
+			// Let the user fix the path rather than start over.
+			model.submissionStage = "path"
+			return model, nil
+		}
 		if message.err == nil {
 			model.submissionForm = message.form
 			model.submissionValues = make(map[string]string, len(message.form.Parameters))
@@ -681,6 +727,9 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if message.err == nil {
 			result := message.result
 			model.clearSubmission()
+			if model.executionVisible {
+				model.closeExecution()
+			}
 			model.pendingWorkflowNamespace = result.Namespace
 			model.pendingWorkflowName = result.Name
 			workflowDescriptor, _ := resources.Lookup("workflows")
@@ -832,6 +881,9 @@ func (model Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if model.submissionVisible {
 		return model.updateSubmissionKey(key)
 	}
+	if model.actionVisible {
+		return model.updateActionKey(key)
+	}
 	if model.notificationConfig {
 		return model.updateNotificationConfigKey(key)
 	}
@@ -905,6 +957,10 @@ func (model Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		model.openNotificationConfig()
 	case "s":
 		return model.openTemplateSubmission()
+	case "S":
+		return model.openLocalSubmission()
+	case "a":
+		return model.openActions()
 	}
 	return model, nil
 }
@@ -1087,12 +1143,20 @@ func (model Model) openTemplateSubmission() (tea.Model, tea.Cmd) {
 	source := workflows.SubmissionSource{
 		Namespace: item.Namespace,
 		Name:      item.Name,
-		Cluster:   model.resourceDescriptor.Kind == resources.ClusterWorkflowTemplates,
+		Kind:      workflows.SourceWorkflowTemplate,
+	}
+	if model.resourceDescriptor.Kind == resources.ClusterWorkflowTemplates {
+		source.Kind = workflows.SourceClusterWorkflowTemplate
 	}
 	destination := item.Namespace
 	if destination == "" {
 		destination = model.currentNamespace
 	}
+	return model.startSubmission(source, destination)
+}
+
+// startSubmission loads the parameter form for a submission source.
+func (model Model) startSubmission(source workflows.SubmissionSource, destination string) (tea.Model, tea.Cmd) {
 	model.submissionVisible = true
 	model.submissionStage = "loading"
 	model.submissionForm = workflows.SubmissionForm{Source: source, DestinationNamespace: destination}
@@ -1104,6 +1168,8 @@ func (model Model) openTemplateSubmission() (tea.Model, tea.Cmd) {
 
 func (model Model) updateSubmissionKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch model.submissionStage {
+	case "path":
+		return model.updateSubmissionPathKey(key)
 	case "loading":
 		if key.String() == "esc" {
 			model.clearSubmission()
@@ -1125,6 +1191,7 @@ func (model Model) updateSubmissionKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 				Source:               model.submissionForm.Source,
 				DestinationNamespace: model.submissionForm.DestinationNamespace,
 				Parameters:           copyStringMap(model.submissionValues),
+				Manifest:             model.submissionForm.Manifest,
 			})
 		}
 		return model, nil
@@ -1358,6 +1425,8 @@ func (model Model) screen() string {
 		return model.logView(width)
 	case model.submissionVisible:
 		return model.submissionView(width)
+	case model.actionVisible:
+		return model.actionView(width)
 	case model.notificationConfig:
 		return model.notificationConfigView(width)
 	case model.executionVisible:
@@ -1396,6 +1465,7 @@ func (model Model) listChrome(width int) (string, string) {
 	if model.resourceNotice != "" {
 		lines = append(lines, theme.Info.Render(" ◆ "+ui.Sanitize(model.resourceNotice)))
 	}
+	lines = append(lines, model.actionStatusLines()...)
 	if model.filterError != nil {
 		lines = append(lines, theme.Warning.Render(" ! filter: "+ui.Sanitize(model.filterError.Error())+" (previous valid filter remains active)"))
 	}
@@ -1416,11 +1486,12 @@ func (model Model) listChrome(width int) (string, string) {
 			theme.Keys(width, "Enter", "apply", "Esc", "cancel", "e.g.", "status=Running · namespace!=argo · age>10m · label:team=payments")
 	case model.showHelp:
 		footer = theme.KeyLines(width, "j/k ↑/↓", "move", "g/G", "first/last", "Enter", "open", "Tab/Shift+Tab", "resources",
-			"/", "filter", "Esc", "clear filter", "s", "submit template", "n", "toggle notify", "N", "configure notify",
+			"/", "filter", "Esc", "clear filter", "a", "workflow actions", "s", "submit template", "S", "submit local YAML",
+			"n", "toggle notify", "N", "configure notify",
 			":", "commands", "?", "hide help", "q", "quit") + "\n" +
 			theme.KeyLines(width, "filters", "fuzzy text · status=Running · namespace!=argo · age>10m · label:team=payments")
 	default:
-		footer = theme.Keys(width, "j/k", "move", "Enter", "open", "/", "filter", "?", "help", "q", "quit", "Tab", "resources", "s", "submit", "n", "notify", ":", "commands")
+		footer = theme.Keys(width, "j/k", "move", "Enter", "open", "/", "filter", "?", "help", "q", "quit", "Tab", "resources", "a", "actions", "s", "submit", "n", "notify", ":", "commands")
 	}
 	return strings.Join(lines, "\n"), footer
 }
@@ -1475,14 +1546,25 @@ func (model Model) listPanel(width, rows int) string {
 }
 
 func (model Model) submissionView(width int) string {
-	source := sourceKind(model.submissionForm.Source) + "/" + model.submissionForm.Source.Name
+	source := model.submissionForm.Source.Label()
 	top := theme.Header(width, "", label("context", model.context), label("submit from", source))
 	title := theme.PanelTitle.Render("Parameters")
 	var lines []string
 	var footer string
 	switch model.submissionStage {
+	case "path":
+		title = theme.PanelTitle.Render("Submit a local Workflow manifest")
+		inner := panelInner(width)
+		lines = []string{
+			theme.Row(ui.Pad(ui.Truncate("› manifest path: "+ui.Sanitize(model.submissionForm.Source.Path)+"▏", inner), inner), true),
+			theme.Muted.Render("    One argoproj.io/v1alpha1 Workflow document; other kinds are rejected."),
+		}
+		if model.submissionError != nil {
+			lines = append(lines, "", theme.Error.Render("! "+ui.Sanitize(model.submissionError.Error())))
+		}
+		footer = theme.Keys(width, "Enter", "load", "Esc", "cancel")
 	case "loading":
-		lines = []string{theme.Info.Render("◌ Loading template parameters…")}
+		lines = []string{theme.Info.Render("◌ Loading parameters…")}
 		footer = theme.Keys(width, "Esc", "cancel")
 	case "error":
 		lines = []string{theme.Error.Render("! " + ui.Sanitize(model.submissionError.Error()))}
@@ -1498,6 +1580,13 @@ func (model Model) submissionView(width int) string {
 			field("context", ui.Sanitize(model.context)),
 			field("namespace", ui.Sanitize(model.submissionForm.DestinationNamespace)),
 			field("source", ui.Sanitize(source)),
+		}
+		if manifest := model.submissionForm.Manifest; manifest != nil {
+			name := manifest.Name
+			if name == "" {
+				name = manifest.GenerateName + "…"
+			}
+			lines = append(lines, field("workflow", ui.Sanitize(name)))
 		}
 		for _, parameter := range model.submissionForm.Parameters {
 			lines = append(lines, field(ui.Sanitize(parameter.Name), ui.Sanitize(model.submissionValues[parameter.Name])))
@@ -1543,13 +1632,6 @@ func (model Model) submissionView(width int) string {
 	return model.frame(top, footer, func(rows int) string {
 		return theme.Panel(title, "", lines, width, rows, true)
 	})
-}
-
-func sourceKind(source workflows.SubmissionSource) string {
-	if source.Cluster {
-		return "ClusterWorkflowTemplate"
-	}
-	return "WorkflowTemplate"
 }
 
 func (model Model) notificationConfigView(width int) string {
