@@ -103,3 +103,21 @@ func TestStreamBatchesLinesAndEnds(t *testing.T) {
 		t.Fatalf("ended event = %+v", ended)
 	}
 }
+
+func TestStreamFlushesLinesWhileFollowedStreamIsQuiet(t *testing.T) {
+	reader, writer := io.Pipe()
+	defer writer.Close()
+	service := &Service{openLog: func(context.Context, Request) (io.ReadCloser, error) { return reader, nil }}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	events := service.Stream(ctx, Request{Follow: true})
+	go func() { _, _ = writer.Write([]byte("starting\n")) }()
+	select {
+	case event := <-events:
+		if strings.Join(event.Lines, ",") != "starting" {
+			t.Fatalf("lines = %v", event.Lines)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("a line was held back while the stream stayed open")
+	}
+}

@@ -460,8 +460,12 @@ func TestSubmitWorkflowFromTemplateFormAndConfirmation(t *testing.T) {
 	model = updated.(Model)
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
 	model = updated.(Model)
-	for _, character := range "hello" {
-		updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{character}})
+	for _, character := range "hello world" {
+		key := tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{character}}
+		if character == ' ' {
+			key.Type = tea.KeySpace
+		}
+		updated, _ = model.Update(key)
 		model = updated.(Model)
 	}
 	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyCtrlS})
@@ -476,7 +480,7 @@ func TestSubmitWorkflowFromTemplateFormAndConfirmation(t *testing.T) {
 	}
 	updated, _ = model.Update(command())
 	model = updated.(Model)
-	if model.submissionVisible || model.resourceDescriptor.Kind != resources.Workflows || service.request.Parameters["message"] != "hello" {
+	if model.submissionVisible || model.resourceDescriptor.Kind != resources.Workflows || service.request.Parameters["message"] != "hello world" {
 		t.Fatalf("submission did not jump to workflows: visible=%t resource=%s request=%+v", model.submissionVisible, model.resourceDescriptor.Kind, service.request)
 	}
 	if model.pendingWorkflowName != "payments-abc" || !strings.Contains(model.resourceNotice, "payments-abc") {
