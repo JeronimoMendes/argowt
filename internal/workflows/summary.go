@@ -25,6 +25,7 @@ type Summary struct {
 	SuspendNode       bool
 	CreationTimestamp time.Time
 	StartedAt         time.Time
+	FinishedAt        time.Time
 	InstanceID        string
 	Template          string
 	Labels            map[string]string
@@ -50,6 +51,7 @@ func Normalize(workflow *wfv1.Workflow) Summary {
 		SuspendNode:       waitingOnSuspendNode(workflow),
 		CreationTimestamp: workflow.CreationTimestamp.Time,
 		StartedAt:         workflow.Status.StartedAt.Time,
+		FinishedAt:        workflow.Status.FinishedAt.Time,
 		InstanceID:        workflow.Labels[ControllerInstanceIDLabel],
 		Template:          template,
 		Labels:            copyLabels(workflow.Labels),
@@ -130,4 +132,27 @@ func phaseRank(summary Summary) int {
 	default:
 		return 5
 	}
+}
+
+// SortCompleted orders finished workflows newest finished first. A workflow
+// without a finish time falls back to its creation time.
+func SortCompleted(summaries []Summary) {
+	sort.SliceStable(summaries, func(i, j int) bool {
+		left, right := summaries[i], summaries[j]
+		if leftTime, rightTime := left.FinishedOrCreated(), right.FinishedOrCreated(); !leftTime.Equal(rightTime) {
+			return leftTime.After(rightTime)
+		}
+		if left.Namespace != right.Namespace {
+			return left.Namespace < right.Namespace
+		}
+		return left.Name < right.Name
+	})
+}
+
+// FinishedOrCreated is the finish time, or the creation time before Argo records one.
+func (s Summary) FinishedOrCreated() time.Time {
+	if !s.FinishedAt.IsZero() {
+		return s.FinishedAt
+	}
+	return s.CreationTimestamp
 }

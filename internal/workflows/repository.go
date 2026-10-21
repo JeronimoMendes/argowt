@@ -37,6 +37,9 @@ type Request struct {
 	CurrentNamespace string
 	InstanceID       string
 	ActiveOnly       bool
+	// CompletedOnly lists workflows that have finished but are still in the
+	// cluster, newest finished first. The Argo archive is not read.
+	CompletedOnly bool
 }
 
 type Snapshot struct {
@@ -122,7 +125,7 @@ func (repository *Repository) run(ctx context.Context, request Request, output c
 	for scope, state := range initial {
 		states[scope] = state
 	}
-	emitCombined(ctx, output, request.Generation, scopes, states, fallback, warnings)
+	emitCombined(ctx, output, request, scopes, states, fallback, warnings)
 
 	workerUpdates := make(chan scopedUpdate)
 	for scope, state := range states {
@@ -134,7 +137,7 @@ func (repository *Repository) run(ctx context.Context, request Request, output c
 			return
 		case update := <-workerUpdates:
 			states[update.scope] = update.state
-			emitCombined(ctx, output, request.Generation, scopes, states, fallback, warnings)
+			emitCombined(ctx, output, request, scopes, states, fallback, warnings)
 		}
 	}
 }
@@ -291,7 +294,7 @@ func consumeWatch(ctx context.Context, stream watch.Interface, request Request, 
 			}
 
 			key := workflow.Namespace + "/" + workflow.Name
-			if event.Type == watch.Deleted || (request.ActiveOnly && !Normalize(workflow).Active()) {
+			if event.Type == watch.Deleted || !request.includes(Normalize(workflow)) {
 				delete(state.workflows, key)
 			} else if request.InstanceID == "" || workflow.Labels[ControllerInstanceIDLabel] == request.InstanceID {
 				state.workflows[key] = Normalize(workflow)
@@ -308,7 +311,7 @@ func stateFromList(list *wfv1.WorkflowList, request Request) scopedState {
 	state := scopedState{workflows: make(map[string]Summary), resourceVersion: list.ResourceVersion}
 	for index := range list.Items {
 		summary := Normalize(&list.Items[index])
-		if request.ActiveOnly && !summary.Active() {
+		if !request.includes(summary) {
 			continue
 		}
 		if request.InstanceID != "" && summary.InstanceID != request.InstanceID {
@@ -319,7 +322,18 @@ func stateFromList(list *wfv1.WorkflowList, request Request) scopedState {
 	return state
 }
 
-func emitCombined(ctx context.Context, output chan<- Snapshot, generation uint64, scopes []string, states map[string]scopedState, fallback bool, staticWarnings map[string]string) {
+// includes reports whether a workflow's phase belongs in the requested view.
+func (request Request) includes(summary Summary) bool {
+	if request.ActiveOnly && !summary.Active() {
+		return false
+	}
+	if request.CompletedOnly && summary.Active() {
+		return false
+	}
+	return true
+}
+
+func emitCombined(ctx context.Context, output chan<- Snapshot, request Request, scopes []string, states map[string]scopedState, fallback bool, staticWarnings map[string]string) {
 	byIdentity := make(map[string]Summary)
 	warnings := make(map[string]string, len(staticWarnings)+len(states))
 	for scope, warning := range staticWarnings {
@@ -346,7 +360,11 @@ func emitCombined(ctx context.Context, output chan<- Snapshot, generation uint64
 	for _, workflow := range byIdentity {
 		items = append(items, workflow)
 	}
-	Sort(items)
+	if request.CompletedOnly {
+		SortCompleted(items)
+	} else {
+		Sort(items)
+	}
 	state := StateFresh
 	switch {
 	case len(warnings) > 0 && fresh > 0:
@@ -357,7 +375,7 @@ func emitCombined(ctx context.Context, output chan<- Snapshot, generation uint64
 		state = StateStale
 	}
 	sendSnapshot(ctx, output, Snapshot{
-		Generation:    generation,
+		Generation:    request.Generation,
 		Workflows:     items,
 		State:         state,
 		Fallback:      fallback,
@@ -368,7 +386,8 @@ func emitCombined(ctx context.Context, output chan<- Snapshot, generation uint64
 
 // listOptions filters workflows on the server.
 // ActiveOnly skips completed workflows: in a namespace with ~1000 completed
-// workflows, this cuts the list from ~80MB to ~2MB.
+// workflows, this cuts the list from ~80MB to ~2MB. CompletedOnly is the
+// opposite, so it pays that cost and only runs when the user asks for it.
 func listOptions(request Request) metav1.ListOptions {
 	selector := labels.NewSelector()
 	if request.InstanceID != "" {
@@ -377,6 +396,10 @@ func listOptions(request Request) metav1.ListOptions {
 	}
 	if request.ActiveOnly {
 		requirement, _ := labels.NewRequirement(CompletedLabel, selection.NotEquals, []string{"true"})
+		selector = selector.Add(*requirement)
+	}
+	if request.CompletedOnly {
+		requirement, _ := labels.NewRequirement(CompletedLabel, selection.Equals, []string{"true"})
 		selector = selector.Add(*requirement)
 	}
 	return metav1.ListOptions{LabelSelector: selector.String()}

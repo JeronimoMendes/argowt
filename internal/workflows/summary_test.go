@@ -69,3 +69,19 @@ func TestSortIsDeterministic(t *testing.T) {
 		}
 	}
 }
+
+func TestSortCompletedNewestFinishedFirst(t *testing.T) {
+	base := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	items := []Summary{
+		{Name: "old", Phase: "Succeeded", CreationTimestamp: base, FinishedAt: base.Add(time.Minute)},
+		{Name: "unfinished", Phase: "Failed", CreationTimestamp: base.Add(2 * time.Hour)},
+		{Name: "new", Phase: "Failed", CreationTimestamp: base, FinishedAt: base.Add(time.Hour)},
+	}
+	SortCompleted(items)
+	want := []string{"unfinished", "new", "old"}
+	for index, name := range want {
+		if items[index].Name != name {
+			t.Fatalf("item %d = %q, want %q; all=%+v", index, items[index].Name, name, items)
+		}
+	}
+}

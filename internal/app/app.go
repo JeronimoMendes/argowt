@@ -65,6 +65,7 @@ func Run(ctx context.Context, options Options) error {
 	logService := applogs.NewService(connection.Kubernetes)
 	watchContext, cancel := context.WithCancel(ctx)
 	defer cancel()
+	workflowContext, workflowCancel := context.WithCancel(watchContext)
 	state, stateErr := config.LoadState(options.Paths.StateFile)
 	if stateErr != nil {
 		state = config.NewState()
@@ -72,7 +73,7 @@ func Run(ctx context.Context, options Options) error {
 	notificationManager := notify.NewManager(workflowSource, connection.Context, options.Paths.StateFile, state, notify.NewDesktop())
 	notificationManager.Start(watchContext)
 	defer notificationManager.Close()
-	updates := repository.Start(watchContext, workflows.Request{
+	updates := repository.Start(workflowContext, workflows.Request{
 		Generation:       generation,
 		AllNamespaces:    options.AllNamespaces,
 		Namespaces:       options.Namespaces,
@@ -87,6 +88,8 @@ func Run(ctx context.Context, options Options) error {
 		InstanceID:          options.InstanceID,
 		Updates:             updates,
 		Cancel:              cancel,
+		WorkflowRepository:  repository,
+		WorkflowCancel:      workflowCancel,
 		RootContext:         watchContext,
 		ResourceRepository:  resourceRepository,
 		ExecutionRepository: repository,
@@ -150,6 +153,12 @@ func checkUpdate(ctx context.Context) string {
 	return tag
 }
 
+// WorkflowListRepository restarts the workflow list stream, e.g. to switch
+// between active and completed workflows.
+type WorkflowListRepository interface {
+	Start(context.Context, workflows.Request) <-chan workflows.Snapshot
+}
+
 type WorkflowExecutionRepository interface {
 	StartExecution(context.Context, uint64, string, string, string) <-chan workflows.ExecutionUpdate
 }
@@ -186,6 +195,8 @@ type ModelOptions struct {
 	InstanceID          string
 	Updates             <-chan workflows.Snapshot
 	Cancel              context.CancelFunc
+	WorkflowRepository  WorkflowListRepository
+	WorkflowCancel      context.CancelFunc
 	RootContext         context.Context
 	ResourceRepository  ResourceRepository
 	ExecutionRepository WorkflowExecutionRepository
@@ -210,6 +221,11 @@ type Model struct {
 	instanceID string
 	updates    <-chan workflows.Snapshot
 	cancel     context.CancelFunc
+
+	// showCompleted lists finished workflows still in the cluster instead of active ones.
+	workflowRepository WorkflowListRepository
+	workflowCancel     context.CancelFunc
+	showCompleted      bool
 
 	rootContext         context.Context
 	resourceRepository  ResourceRepository
@@ -342,6 +358,7 @@ type Model struct {
 
 type snapshotMessage struct {
 	snapshot workflows.Snapshot
+	updates  <-chan workflows.Snapshot
 	open     bool
 }
 
@@ -459,6 +476,8 @@ func NewModel(options ModelOptions) Model {
 		instanceID:           options.InstanceID,
 		updates:              options.Updates,
 		cancel:               options.Cancel,
+		workflowRepository:   options.WorkflowRepository,
+		workflowCancel:       options.WorkflowCancel,
 		rootContext:          rootContext,
 		resourceRepository:   options.ResourceRepository,
 		executionRepository:  options.ExecutionRepository,
@@ -518,7 +537,7 @@ func findUpdate(ctx context.Context, check func(context.Context) string) tea.Cmd
 func waitForSnapshot(updates <-chan workflows.Snapshot) tea.Cmd {
 	return func() tea.Msg {
 		snapshot, open := <-updates
-		return snapshotMessage{snapshot: snapshot, open: open}
+		return snapshotMessage{snapshot: snapshot, updates: updates, open: open}
 	}
 }
 
@@ -606,6 +625,10 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	switch message := message.(type) {
 	case snapshotMessage:
 		if !message.open {
+			return model, nil
+		}
+		// A stream replaced by toggleCompleted is cancelled and closes on its own.
+		if message.updates != nil && message.updates != model.updates {
 			return model, nil
 		}
 		if message.snapshot.Generation == model.generation {
@@ -738,6 +761,13 @@ func (model Model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			workflowDescriptor, _ := resources.Lookup("workflows")
 			switched, command := model.switchResource(workflowDescriptor)
 			model = switched.(Model)
+
+			// The completed list would hide the new workflow.
+			if model.showCompleted {
+				toggled, toggleCommand := model.toggleCompleted()
+				model = toggled.(Model)
+				command = tea.Batch(command, toggleCommand)
+			}
 
 			// A template filter (e.g. name=train-hera) would hide the new workflow.
 			model.query = ""
@@ -965,8 +995,40 @@ func (model Model) updateKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return model.openLocalSubmission()
 	case "a":
 		return model.openActions()
+	case "c":
+		return model.toggleCompleted()
 	}
 	return model, nil
+}
+
+// toggleCompleted switches the workflow list between active workflows and
+// completed workflows still in the cluster, restarting the list stream.
+func (model Model) toggleCompleted() (tea.Model, tea.Cmd) {
+	if model.resourceDescriptor.Kind != resources.Workflows || model.workflowRepository == nil {
+		return model, nil
+	}
+	if model.workflowCancel != nil {
+		model.workflowCancel()
+	}
+	model.showCompleted = !model.showCompleted
+	model.generation++
+	model.items = nil
+	model.partialErrors = nil
+	model.fatalError = nil
+	model.connectionState = workflows.StateLoading
+	model.cursor = 0
+	workflowContext, cancel := context.WithCancel(model.rootContext)
+	model.workflowCancel = cancel
+	model.updates = model.workflowRepository.Start(workflowContext, workflows.Request{
+		Generation:       model.generation,
+		AllNamespaces:    model.allNamespaces,
+		Namespaces:       model.namespaces,
+		CurrentNamespace: model.currentNamespace,
+		InstanceID:       model.instanceID,
+		ActiveOnly:       !model.showCompleted,
+		CompletedOnly:    model.showCompleted,
+	})
+	return model, waitForSnapshot(model.updates)
 }
 
 func (model Model) updateDetailKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1493,12 +1555,16 @@ func (model Model) listChrome(width int) (string, string) {
 			theme.Keys(width, "Enter", "apply", "Esc", "cancel", "e.g.", "status=Running · namespace!=argo · age>10m · label:team=payments")
 	case model.showHelp:
 		footer = theme.KeyLines(width, "j/k ↑/↓", "move", "g/G", "first/last", "Enter", "open", "Tab/Shift+Tab", "resources",
-			"/", "filter", "Esc", "clear filter", "a", "workflow actions", "s", "submit template", "S", "submit local YAML",
+			"/", "filter", "Esc", "clear filter", "c", "active/completed workflows", "a", "workflow actions", "s", "submit template", "S", "submit local YAML",
 			"n", "toggle notify", "N", "configure notify",
 			":", "commands", "?", "hide help", "q", "quit") + "\n" +
 			theme.KeyLines(width, "filters", "fuzzy text · status=Running · namespace!=argo · age>10m · label:team=payments")
 	default:
-		footer = theme.Keys(width, "j/k", "move", "Enter", "open", "/", "filter", "?", "help", "q", "quit", "Tab", "resources", "a", "actions", "s", "submit", "n", "notify", ":", "commands")
+		completedKey := "completed"
+		if model.showCompleted {
+			completedKey = "active"
+		}
+		footer = theme.Keys(width, "j/k", "move", "Enter", "open", "/", "filter", "?", "help", "q", "quit", "Tab", "resources", "c", completedKey, "a", "actions", "s", "submit", "n", "notify", ":", "commands")
 	}
 	return strings.Join(lines, "\n"), footer
 }
@@ -1516,8 +1582,13 @@ func listCapacity(rows int) int {
 func (model Model) listPanel(width, rows int) string {
 	inner := panelInner(width)
 	nameWidth := min(max(29, inner-48), 60)
+	ageHeader := "AGE"
+	completed := model.showCompleted && model.resourceDescriptor.Kind == resources.Workflows
+	if completed {
+		ageHeader = "FINISHED"
+	}
 	lines := []string{
-		theme.TableHeader.Render(ui.Truncate(fmt.Sprintf("  %-13s %-19s %-*s %s", "STATUS", "NAMESPACE", nameWidth, "NAME", "AGE"), inner)),
+		theme.TableHeader.Render(ui.Truncate(fmt.Sprintf("  %-13s %-19s %-*s %s", "STATUS", "NAMESPACE", nameWidth, "NAME", ageHeader), inner)),
 		theme.Border.Render(strings.Repeat("─", inner)),
 	}
 	var count int
@@ -1531,10 +1602,18 @@ func (model Model) listPanel(width, rows int) string {
 			if model.notificationManager != nil && model.notificationManager.IsWatched(item.UID) {
 				name = "🔔 " + name
 			}
-			lines = append(lines, listRow(inner, nameWidth, index == model.cursor, statusText(item), item.Namespace, name, item.CreationTimestamp))
+			age := item.CreationTimestamp
+			if completed {
+				age = item.FinishedOrCreated()
+			}
+			lines = append(lines, listRow(inner, nameWidth, index == model.cursor, statusText(item), item.Namespace, name, age))
 		}
 		if count == 0 && model.connectionState != workflows.StateLoading {
-			lines = append(lines, theme.Muted.Render("  No active workflows match the current scope."))
+			if completed {
+				lines = append(lines, theme.Muted.Render("  No completed workflows in the cluster match the current scope."))
+			} else {
+				lines = append(lines, theme.Muted.Render("  No active workflows match the current scope."))
+			}
 		}
 	} else {
 		items := model.filteredResourceItems()
@@ -1549,6 +1628,13 @@ func (model Model) listPanel(width, rows int) string {
 		}
 	}
 	title := theme.PanelTitle.Render(model.resourceDescriptor.Title)
+	if model.resourceDescriptor.Kind == resources.Workflows {
+		if completed {
+			title += theme.Muted.Render(" · completed")
+		} else {
+			title += theme.Muted.Render(" · active")
+		}
+	}
 	return theme.Panel(title, theme.Muted.Render(plural(count, "item")), lines, width, rows, true)
 }
 
