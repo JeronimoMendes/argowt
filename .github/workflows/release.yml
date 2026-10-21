@@ -1,9 +1,17 @@
 name: release
 
-# Publish platform binaries and checksums on each version tag.
+# Publish platform binaries and checksums on each version tag. The tag may
+# come from a plain `git push` or from a release drafted in the GitHub UI, so
+# the publish step attaches to an existing release instead of failing on it.
+# Run it by hand with a tag to (re)publish binaries for an existing release.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing version tag to publish, e.g. v0.2.0"
+        required: true
 
 permissions:
   contents: write
@@ -11,15 +19,19 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
 
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
 
       - name: Check and build
-        run: make release-check VERSION="$GITHUB_REF_NAME" BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        run: make release-check VERSION="$TAG" BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 
       - name: Checksums
         working-directory: bin/release-check
@@ -28,4 +40,12 @@ jobs:
       - name: Publish
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" bin/release-check/* --generate-notes
+        run: |
+          if out=$(gh release view "$TAG" 2>&1); then
+            gh release upload "$TAG" bin/release-check/* --clobber
+          elif grep -q "release not found" <<<"$out"; then
+            gh release create "$TAG" bin/release-check/* --generate-notes
+          else
+            echo "$out" >&2
+            exit 1
+          fi
