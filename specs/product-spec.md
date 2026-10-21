@@ -98,7 +98,7 @@ The interface uses a `k9s`-style resource-browser model:
 
 ### 6.2 Startup screen
 
-The first screen shows active workflows across the effective namespace scope. Active workflows are nonterminal workflows, including pending, running, and suspended workflows. Terminal workflows remain discoverable through filters and resource views.
+The first screen shows active workflows across the effective namespace scope. Active workflows are nonterminal workflows, including pending, running, and suspended workflows. Press `c` to switch to completed workflows that are still in the cluster, newest finished first, and again to return. Completed workflows are listed only while that view is open, because listing them costs far more than listing active ones. Workflows already garbage-collected into the Argo archive are not shown; that needs the Argo Server.
 
 ### 6.3 Input model
 

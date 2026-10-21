@@ -70,7 +70,12 @@ func (model Model) paletteCommands() []paletteCommand {
 			paletteCommand{ID: "filter", Title: "Filter resources", Shortcut: "/"},
 		)
 		if model.resourceDescriptor.Kind == resources.Workflows {
+			title := "Workflows: show completed"
+			if model.showCompleted {
+				title = "Workflows: show active"
+			}
 			commands = append(commands,
+				paletteCommand{ID: "workflows.completed", Title: title, Shortcut: "c"},
 				paletteCommand{ID: "notify.toggle", Title: "Toggle workflow notifications", Shortcut: "n"},
 				paletteCommand{ID: "notify.configure", Title: "Configure workflow notifications", Shortcut: "N"},
 			)
@@ -130,6 +135,8 @@ func (model Model) executePaletteCommand(command paletteCommand) (tea.Model, tea
 		return model.openSelectedDetail()
 	case "filter":
 		model.filtering = true
+	case "workflows.completed":
+		return model.toggleCompleted()
 	case "submit":
 		return model.openTemplateSubmission()
 	case "notify.toggle":

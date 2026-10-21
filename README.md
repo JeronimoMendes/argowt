@@ -10,7 +10,7 @@
 
 - Native kubeconfig and client-go authentication, including exec plugins.
 - Current-context, explicit-context, namespace, all-namespace, and controller-instance scopes.
-- Live active-workflow list/watch with deterministic ordering.
+- Live active-workflow list/watch with deterministic ordering, plus a completed-workflows view (`c`) for finished workflows still in the cluster, newest finished first. Archived workflows need the Argo Server and are not shown.
 - Adaptive all-namespace access with namespace fallback under restricted RBAC.
 - Visible fresh, partial-authorization, stale, reconnecting, and fatal states.
 - Adaptive light/dark terminal colors, highlighted selections, and symbol-plus-text statuses that remain understandable without color.
@@ -89,7 +89,7 @@ argowt 'https://argo.example.com/workflows/argo/hello?nodeId=hello-123'
 
 An Argo web UI URL opens its workflow (and node), template, cron workflow, event source, or sensor. The URL namespace becomes the scope unless `--namespace` or `--all-namespaces` is set. The kube context is not read from the URL; use `--context`.
 
-Inside the browser, use `j`/`k` or arrow keys to navigate, `:` to switch resource types, `/` to filter, `Enter` to open a workflow or resource, `n`/`N` to toggle/configure notifications, `a` to open the actions menu for the selected workflow (also in the execution view), `s` to submit a selected template, `S` to submit a local Workflow YAML file, `?` for help, and `q` to quit. Workflow execution views use `t`, `d`, and `l` for tree, DAG, and table modes; press `Enter` or `o` on a node for live pod logs.
+Inside the browser, use `j`/`k` or arrow keys to navigate, `:` to switch resource types, `/` to filter, `Enter` to open a workflow or resource, `n`/`N` to toggle/configure notifications, `c` to switch between active and completed workflows, `a` to open the actions menu for the selected workflow (also in the execution view), `s` to submit a selected template, `S` to submit a local Workflow YAML file, `?` for help, and `q` to quit. Workflow execution views use `t`, `d`, and `l` for tree, DAG, and table modes; press `Enter` or `o` on a node for live pod logs.
 
 ```text
 argowt [flags] [URL]

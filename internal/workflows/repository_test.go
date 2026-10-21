@@ -173,6 +173,61 @@ func TestWatchUpdatesActiveSnapshot(t *testing.T) {
 	}
 }
 
+func TestCompletedOnlyListsAndWatchesFinishedWorkflows(t *testing.T) {
+	watcher := watch.NewRaceFreeFake()
+	base := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
+	older := workflow("argo", "older", "Succeeded", "")
+	older.Status.FinishedAt = metav1.NewTime(base)
+	newer := workflow("argo", "newer", "Failed", "")
+	newer.Status.FinishedAt = metav1.NewTime(base.Add(time.Hour))
+	client := &fakeWorkflowClient{
+		list:    workflowList("1", older, workflow("argo", "running", "Running", ""), newer),
+		watcher: watcher,
+	}
+	repository := NewRepository(fakeWorkflowSource{clients: map[string]*fakeWorkflowClient{"argo": client}}, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	updates := repository.Start(ctx, Request{Generation: 1, CurrentNamespace: "argo", CompletedOnly: true})
+
+	snapshot := <-updates
+	if names := summaryNames(snapshot.Workflows); len(names) != 2 || names[0] != "newer" || names[1] != "older" {
+		t.Fatalf("workflows = %v", names)
+	}
+	client.mu.Lock()
+	selector := client.lastOptions.LabelSelector
+	client.mu.Unlock()
+	if selector != CompletedLabel+"=true" {
+		t.Fatalf("label selector = %q", selector)
+	}
+
+	finished := workflow("argo", "just-finished", "Succeeded", "")
+	finished.Status.FinishedAt = metav1.NewTime(base.Add(2 * time.Hour))
+	finished.ResourceVersion = "2"
+	watcher.Add(&finished)
+	snapshot = <-updates
+	if names := summaryNames(snapshot.Workflows); len(names) != 3 || names[0] != "just-finished" {
+		t.Fatalf("workflows after completion = %v", names)
+	}
+
+	// A retried workflow goes back to running and leaves the completed list.
+	retried := finished.DeepCopy()
+	retried.Status.Phase = wfv1.WorkflowRunning
+	retried.ResourceVersion = "3"
+	watcher.Modify(retried)
+	snapshot = <-updates
+	if names := summaryNames(snapshot.Workflows); len(names) != 2 {
+		t.Fatalf("workflows after retry = %v", names)
+	}
+}
+
+func summaryNames(summaries []Summary) []string {
+	names := make([]string, 0, len(summaries))
+	for _, summary := range summaries {
+		names = append(names, summary.Name)
+	}
+	return names
+}
+
 func TestExpiredWatchRelistsFromFreshResourceVersion(t *testing.T) {
 	watcher := watch.NewRaceFreeFake()
 	client := &fakeWorkflowClient{

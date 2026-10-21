@@ -5,6 +5,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
@@ -594,5 +595,64 @@ func TestMouseClickSelectsRowUnderPointer(t *testing.T) {
 	updated, _ := model.Update(tea.MouseMsg{X: 10, Y: row, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
 	if cursor := updated.(Model).cursor; cursor != 1 {
 		t.Fatalf("cursor = %d, want 1", cursor)
+	}
+}
+
+type fakeWorkflowListRepository struct {
+	requests []workflows.Request
+	updates  chan workflows.Snapshot
+}
+
+func (repository *fakeWorkflowListRepository) Start(_ context.Context, request workflows.Request) <-chan workflows.Snapshot {
+	repository.requests = append(repository.requests, request)
+	repository.updates = make(chan workflows.Snapshot, 1)
+	return repository.updates
+}
+
+func TestCompletedToggleRestartsWorkflowList(t *testing.T) {
+	repository := &fakeWorkflowListRepository{}
+	oldUpdates := make(chan workflows.Snapshot, 1)
+	model := NewModel(ModelOptions{Generation: 1, Updates: oldUpdates, WorkflowRepository: repository, CurrentNamespace: "argo"})
+	model.width, model.height = 120, 30
+	model.connectionState = workflows.StateFresh
+	model.items = []workflows.Summary{{Namespace: "argo", Name: "running", Phase: "Running"}}
+
+	updated, command := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	model = updated.(Model)
+	if command == nil || len(repository.requests) != 1 {
+		t.Fatalf("toggle did not restart the list: %+v", repository.requests)
+	}
+	request := repository.requests[0]
+	if !request.CompletedOnly || request.ActiveOnly || request.Generation != 2 || request.CurrentNamespace != "argo" {
+		t.Fatalf("request = %+v", request)
+	}
+	if len(model.items) != 0 || model.connectionState != workflows.StateLoading {
+		t.Fatalf("active items survived the toggle: %+v", model.items)
+	}
+
+	// A late snapshot from the replaced stream is dropped.
+	updated, _ = model.Update(snapshotMessage{open: true, updates: oldUpdates, snapshot: workflows.Snapshot{
+		Generation: 2, State: workflows.StateFresh, Workflows: []workflows.Summary{{Name: "stale"}},
+	}})
+	model = updated.(Model)
+	if len(model.items) != 0 {
+		t.Fatalf("old stream changed items: %+v", model.items)
+	}
+
+	finished := time.Now().Add(-90 * time.Minute)
+	updated, _ = model.Update(snapshotMessage{open: true, updates: repository.updates, snapshot: workflows.Snapshot{
+		Generation: 2, State: workflows.StateFresh,
+		Workflows: []workflows.Summary{{Namespace: "argo", Name: "done", Phase: "Succeeded", FinishedAt: finished}},
+	}})
+	model = updated.(Model)
+	view := ansi.Strip(model.View())
+	if !strings.Contains(view, "completed") || !strings.Contains(view, "FINISHED") || !strings.Contains(view, "done") {
+		t.Fatalf("completed view missing rows or labels:\n%s", view)
+	}
+
+	updated, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("c")})
+	model = updated.(Model)
+	if len(repository.requests) != 2 || !repository.requests[1].ActiveOnly || repository.requests[1].CompletedOnly {
+		t.Fatalf("second toggle request = %+v", repository.requests)
 	}
 }
