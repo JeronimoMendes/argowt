@@ -41,8 +41,11 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
+          if out=$(gh release view "$TAG" 2>&1); then
             gh release upload "$TAG" bin/release-check/* --clobber
-          else
+          elif grep -q "release not found" <<<"$out"; then
             gh release create "$TAG" bin/release-check/* --generate-notes
+          else
+            echo "$out" >&2
+            exit 1
           fi
